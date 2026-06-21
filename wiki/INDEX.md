@@ -19,6 +19,11 @@ One line per article: `- [[slug]] — one-line summary`. Grouped by topic; add/r
 - [[package-installation]] — read + install pipeline, sinks, item install/merge modes, post-steps (and the Update-format pitfall)
 - [[security-accounts]] — users & roles in the definition and package (secondary for SitecoreAI)
 
-## To research (linked but not yet written)
+## Legacy UI / UX (blueprint)
 
-- [[sitecore-marketplace-app]] — Marketplace app SDK, hosting, auth, and the SitecoreAI Authoring/Management API for applying items
+- [[package-designer-ui]] — screen-by-screen UX of the classic Package Designer (create): ribbon, sources panel, metadata, static/dynamic item & file wizards, security accounts, installation options, generate zip
+- [[installation-wizard-ui]] — screen-by-screen UX of the classic Installation Wizard (install): select/upload, readme, verify, the ★ item-collision/merge dialog (Apply / Apply to all / Abort), progress, result
+
+## Application
+
+- [[sitecore-marketplace-app]] — how this repo is set up as a Marketplace app: Next.js 15 + Marketplace SDK (client + xmc), Standalone extension, and how items flow via XMC

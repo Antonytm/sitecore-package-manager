@@ -1,1 +1,5 @@
+# Local working files (sample packages, decompiled assemblies, scratch)
 files/
+
+# OS / editor
+.DS_Store
