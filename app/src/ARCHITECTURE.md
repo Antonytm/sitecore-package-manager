@@ -50,14 +50,36 @@ Collision handling (`CollisionOption` = Overwrite / Merge(+submode) / Skip) is m
 **once** here and reused by both the designer's "Installation options" and the installer's
 collision dialog — they're twins (see `wiki/articles/`).
 
+## Byte-identity & provenance
+
+The invariant `writePackage(readPackage(bytes)) === bytes` (full outer `.zip`) is achieved
+by **raw entry preservation, not recompression.** Cross-implementation DEFLATE is not
+canonical — re-deflating the .NET writer's entries with a JS library would change the bytes
+(and the timestamps, CRC ordering, etc. would never match). So:
+
+- `core/zip` is a purpose-built codec: `readZip` keeps each entry's exact local-header+payload
+  and central-directory bytes (a `RawZipRecord`); `writeZip` **replays them verbatim**.
+- `readPackage` stashes that raw archive on `model.provenance` (an opaque field; xmc/UI
+  ignore it). `writePackage` replays it ⇒ byte-identical.
+- Entry serializers (`items`, `properties`, `metadata`) are independently byte-faithful
+  (`serialize(parse(x)) === x`) and used to build the **semantic** `PackageModel` on read.
+- **Limit:** byte-identity holds only for *unmodified* round-trips. Genuinely editing an
+  entry (the Create flow) forces a re-deflate, which is not byte-reproducible — that path is
+  built from the model and validated by behaviour, not by byte-equality.
+
+Libs: `fflate` (raw inflate/deflate only — not its zip container); CRC-32 is local
+(`core/crc32`). No `fast-xml-parser` — the item/definition XML is hand-parsed so attribute
+order and the specific entity escaping survive untouched.
+
 ## Build order
 
-1. **`core/`** first — no dependencies; testable directly against `files/` sample packages.
-   Target invariant: `writePackage(readPackage(bytes))` is byte-identical (the byte-compat
-   guarantee). Planned libs: `jszip`, `fast-xml-parser`.
+1. **`core/`** first — no dependencies; tested directly against `files/` sample packages
+   (`npm test`; suites self-skip when `files/` is absent). Invariant above is green for all
+   item/empty samples. **Done:** zip codec, item/properties/metadata/definition codecs,
+   `readPackage`/`writePackage`.
 2. **`xmc/`** — stub with `core` model fixtures before live XMC is available.
 3. **`features/`** — built last against the UX blueprint articles.
 
-Everything is client-side (SDK = postMessage in the iframe; JSZip runs in the browser).
-If large packages make the UI janky, push `core` parsing into a Web Worker — the pure
-boundary makes that a drop-in.
+Everything is client-side (SDK = postMessage in the iframe; the zip codec runs in the
+browser). If large packages make the UI janky, push `core` parsing into a Web Worker — the
+pure boundary makes that a drop-in.

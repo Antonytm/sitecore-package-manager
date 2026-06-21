@@ -10,11 +10,14 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@sitecore-marketplace-sdk/client": "^0.2.0",
     "@sitecore-marketplace-sdk/xmc": "^0.2.0",
+    "fflate": "^0.8.3",
     "next": "^15.4.6",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
@@ -22,6 +25,7 @@
   "devDependencies": {
     "@types/node": "^24.2.0",
     "@types/react": "19.1.9",
-    "typescript": "5.9.2"
+    "typescript": "5.9.2",
+    "vitest": "^4.1.9"
   }
 }

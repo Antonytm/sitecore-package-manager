@@ -137,4 +137,11 @@ export interface PackageModel {
   items: ItemModel[];
   /** Source definitions, used by the Create (designer) side. */
   sources: SourceDefinition[];
+  /**
+   * Opaque byte-faithful provenance: set by `readPackage`, consumed by `writePackage`
+   * to reproduce the original `.zip` byte-for-byte (the raw zip records). Ignored by the
+   * xmc/UI layers. Treat as internal to core/; mutating the semantic fields above does not
+   * update it, so a writer that has changed content must rebuild rather than replay.
+   */
+  provenance?: unknown;
 }
