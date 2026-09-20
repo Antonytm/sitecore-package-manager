@@ -1,0 +1,16 @@
+# Netlify build settings, versioned rather than living only in the site UI.
+#
+# The site's base directory is `app/`, so Netlify reads this file from there and the paths
+# below are relative to it.
+#
+# `publish` must be set explicitly. Left at its default it resolves to the base directory
+# itself, and @netlify/plugin-nextjs refuses that: "Your publish directory cannot be the
+# same as the base directory of your site." The build succeeds first, so the failure shows
+# up only at the plugin's onBuild step.
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  # package.json requires Node >= 18.18. Pin it rather than track Netlify's default.
+  NODE_VERSION = "22"
