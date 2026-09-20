@@ -56,10 +56,36 @@ describe.skipIf(!hasSamples)("package read — semantic model", () => {
     expect(model.sources.some((s) => s.kind === "items-static")).toBe(true);
   });
 
-  it("round-trips after dropping provenance is rejected (rebuild not yet supported)", async () => {
-    const path = samplePackages().find((p) => p.includes("empty-package"));
+  // Without provenance there are no source bytes to replay, so the package is rebuilt from
+  // the model. That cannot be byte-identical — cross-implementation DEFLATE is not
+  // canonical — but it must be a readable package that means the same thing. Entry-level
+  // byte-equality is asserted separately, in rebuild.test.ts.
+  it("rebuilds a readable, equivalent package after dropping provenance", async () => {
+    const path = samplePackages().find((p) => p.includes("items-dynamically"));
     const model = await readPackage(readBytes(path!));
     model.provenance = undefined;
-    await expect(writePackage(model)).rejects.toThrow(/not implemented/);
+
+    const again = await readPackage(await writePackage(model));
+
+    expect(again.metadata).toEqual(model.metadata);
+    expect(again.items.length).toBe(model.items.length);
+    expect(again.sources.map((s) => s.kind)).toEqual(model.sources.map((s) => s.kind));
+
+    const byId = new Map(again.items.map((i) => [i.id, i]));
+    for (const item of model.items) {
+      const round = byId.get(item.id);
+      expect(round, item.path).toBeDefined();
+      expect(round!.templateId).toBe(item.templateId);
+      expect(round!.parentId).toBe(item.parentId);
+      expect(round!.created).toBe(item.created);
+      expect(round!.sortorder).toBe(item.sortorder);
+      // Empty-valued fields are deliberately not serialized, so compare what survives.
+      const kept = (i: typeof item) =>
+        i.sharedFields.filter((f) => f.value !== "").map((f) => f.id + "=" + f.value);
+      expect(kept(round!).sort()).toEqual(kept(item).sort());
+      expect(round!.languages.map((l) => l.language)).toEqual(
+        item.languages.map((l) => l.language),
+      );
+    }
   });
 });

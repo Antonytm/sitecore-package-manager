@@ -282,7 +282,17 @@ function buildCentral(
   return head;
 }
 
+/** The end-of-central-directory record stores the entry count in 16 bits. */
+export const ZIP_MAX_ENTRIES = 0xffff;
+
 function buildEocd(count: number, cdOffset: number, cdSize: number): Uint8Array {
+  if (count > ZIP_MAX_ENTRIES) {
+    // setUint16 would truncate mod 65536 and silently emit a corrupt archive. There is no
+    // ZIP64 support in this codec, so refuse rather than produce an unreadable package.
+    throw new Error(
+      "writeZip: " + count + " entries exceeds the " + ZIP_MAX_ENTRIES + "-entry zip limit",
+    );
+  }
   const e = new Uint8Array(22);
   const dv = new DataView(e.buffer);
   dv.setUint32(0, SIG_EOCD, true);
@@ -302,7 +312,9 @@ function buildEocd(count: number, cdOffset: number, cdSize: number): Uint8Array 
  * provenance-less entries re-deflated); valid, but not promised byte-identical.
  */
 export function writeZip(archive: ZipArchive): Uint8Array {
-  const allFaithful = archive.entries.every((e) => e.raw);
+  // `every` on an empty array is true, which would take the fast path and emit
+  // prefix + eocd — zero bytes for a from-scratch archive that simply has no entries yet.
+  const allFaithful = archive.entries.length > 0 && archive.entries.every((e) => e.raw);
   if (allFaithful) {
     const locals = archive.entries.map((e) => e.raw!.localChunk);
     const centrals = archive.entries.map((e) => e.raw!.centralChunk);

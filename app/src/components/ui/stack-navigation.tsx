@@ -1,0 +1,390 @@
+import { cn } from "@/src/lib/utils";
+import { type VariantProps, cva } from "class-variance-authority";
+import type { ReactNode } from "react";
+import * as React from "react";
+
+export interface StackNavigationItem {
+  name: string;
+  path: string;
+  icon: ReactNode;
+  badge?: ReactNode;
+  className?: string;
+}
+
+export interface StackNavigationDivider {
+  type: "divider";
+  className?: string;
+}
+
+export type StackNavigationElement =
+  | StackNavigationItem
+  | StackNavigationDivider;
+
+const stackNavigationItemVariants = cva(
+  [
+    // Base styles
+    "flex flex-col items-center justify-center",
+    "rounded-md transition-colors",
+    "text-3xs font-medium",
+    "cursor-pointer",
+    "no-underline",
+    "relative opacity-100",
+  ].join(" "),
+  {
+    variants: {
+      orientation: {
+        vertical: [
+          "overflow-hidden",
+          "h-14 min-w-14 min-h-14",
+          "p-1.5 gap-1",
+        ].join(" "),
+        horizontal: ["min-w-14 w-fit h-14 p-1.5 gap-1", "overflow-hidden"].join(
+          " ",
+        ),
+      },
+      colorScheme: {
+        neutral: "",
+        primary: "",
+      },
+      isActive: {
+        true: "",
+        false: "",
+      },
+    },
+    compoundVariants: [
+      // Neutral - Default state
+      {
+        colorScheme: "neutral",
+        isActive: false,
+        class: [
+          "text-neutral-fg",
+          "hover:bg-neutral-bg hover:text-neutral-fg",
+          "active:bg-neutral-200 active:text-neutral-fg",
+        ].join(" "),
+      },
+      // Neutral - Active state
+      {
+        colorScheme: "neutral",
+        isActive: true,
+        class: [
+          "bg-neutral-bg text-neutral-fg",
+          "hover:bg-neutral-bg hover:text-neutral-fg",
+          "active:bg-neutral-200 active:text-neutral-fg",
+        ].join(" "),
+      },
+      // Primary - Default state
+      {
+        colorScheme: "primary",
+        isActive: false,
+        class: [
+          "text-neutral-fg",
+          "hover:bg-neutral-bg hover:text-neutral-fg",
+          "active:bg-primary-bg active:text-primary-fg",
+        ].join(" "),
+      },
+      // Primary - Active state
+      {
+        colorScheme: "primary",
+        isActive: true,
+        class: [
+          "bg-primary-bg text-primary-fg",
+          "hover:bg-primary-bg hover:text-primary-fg",
+          "active:bg-primary-bg active:text-primary-fg",
+        ].join(" "),
+      },
+    ],
+    defaultVariants: {
+      orientation: "vertical",
+      colorScheme: "neutral",
+      isActive: false,
+    },
+  },
+);
+
+export interface StackNavigationProps {
+  items: StackNavigationElement[];
+  renderItem?: (item: StackNavigationItem) => ReactNode;
+  renderDivider?: (divider: StackNavigationDivider, index: number) => ReactNode;
+  className?: string;
+  navClassName?: string;
+  "aria-label"?: string;
+  width?: string;
+  header?: ReactNode;
+  footer?: ReactNode;
+  orientation?: "vertical" | "horizontal";
+  colorScheme?: "neutral" | "primary";
+  /**
+   * For framework-specific routers, user can pass the pathname from their hooks:
+   * - TanStack Router: `useLocation().pathname`
+   * - React Router: `useLocation().pathname`
+   * - Next.js: `usePathname()`
+   */
+  pathname?: string;
+
+  onItemClick?: (
+    item: StackNavigationItem,
+    event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
+  ) => undefined | boolean;
+}
+
+function DefaultNavItem({
+  item,
+  orientation = "vertical",
+  pathname,
+  onItemClick,
+  colorScheme = "neutral",
+}: {
+  item: StackNavigationItem;
+  orientation?: "vertical" | "horizontal";
+  pathname: string;
+  colorScheme?: "neutral" | "primary";
+  onItemClick?: (
+    item: StackNavigationItem,
+    event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
+  ) => undefined | boolean;
+}) {
+  const isActive = pathname === item.path;
+  const isHorizontal = orientation === "horizontal";
+
+  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (onItemClick) {
+      const result = onItemClick(item, e);
+      if (result === false) {
+        e.preventDefault();
+      }
+    }
+  };
+
+  // Expandable controls use a button so aria-expanded can toggle and Enter/Space work.
+  if (onItemClick) {
+    return (
+      <button
+        type="button"
+        className={cn(
+          stackNavigationItemVariants({
+            orientation,
+            colorScheme,
+            isActive,
+            className: item.className,
+          }),
+        )}
+        aria-label={item.name}
+        aria-haspopup="true"
+        aria-expanded={isActive}
+        onClick={(e) => {
+          onItemClick(item, e);
+        }}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <div
+          aria-hidden="true"
+          className={cn(
+            "shrink-0 flex items-center justify-center",
+            "w-[22px] h-[22px]",
+          )}
+        >
+          {item.icon}
+        </div>
+
+        <span
+          className={cn(
+            !isHorizontal &&
+              "text-3xs text-center overflow-hidden text-ellipsis whitespace-nowrap w-full block leading-[150%] tracking-normal",
+            isHorizontal &&
+              "text-3xs text-center whitespace-nowrap leading-tight",
+          )}
+          title={item.name}
+        >
+          {item.name}
+        </span>
+
+        {!isHorizontal && item.badge && (
+          <div className="absolute top-1 right-1">{item.badge}</div>
+        )}
+      </button>
+    );
+  }
+
+  return (
+    <a
+      href={item.path}
+      onClick={handleClick}
+      className={cn(
+        stackNavigationItemVariants({
+          orientation,
+          colorScheme,
+          isActive,
+          className: item.className,
+        }),
+      )}
+      onContextMenu={(e) => e.preventDefault()}
+      aria-label={item.name}
+    >
+      <div
+        aria-hidden="true"
+        className={cn(
+          "shrink-0 flex items-center justify-center",
+          "w-[22px] h-[22px]",
+        )}
+      >
+        {item.icon}
+      </div>
+
+      <span
+        className={cn(
+          !isHorizontal &&
+            "text-3xs text-center overflow-hidden text-ellipsis whitespace-nowrap w-full block leading-[150%] tracking-normal",
+          isHorizontal &&
+            "text-3xs text-center whitespace-nowrap leading-tight",
+        )}
+        title={item.name}
+      >
+        {item.name}
+      </span>
+
+      {!isHorizontal && item.badge && (
+        <div className="absolute top-1 right-1">{item.badge}</div>
+      )}
+    </a>
+  );
+}
+
+function DefaultDivider({
+  divider,
+  orientation = "vertical",
+}: {
+  divider: StackNavigationDivider;
+  orientation?: "vertical" | "horizontal";
+}) {
+  if (orientation === "horizontal") {
+    return (
+      <div
+        className={cn("w-px h-6 bg-border opacity-100", divider.className)}
+      />
+    );
+  }
+
+  return (
+    <div className={cn("w-14 h-px opacity-100 bg-border", divider.className)} />
+  );
+}
+
+export function StackNavigation({
+  items,
+  renderItem,
+  renderDivider,
+  className,
+  navClassName,
+  "aria-label": ariaLabel,
+  width = "w-[72px]",
+  header,
+  footer,
+  orientation = "vertical",
+  colorScheme = "neutral",
+  pathname: providedPathname,
+  onItemClick,
+  ...props
+}: StackNavigationProps & Omit<React.ComponentProps<"div">, "aria-label">) {
+  // Use provided pathname or fall back to window.location.pathname
+  const [clientPathname, setClientPathname] = React.useState("");
+
+  React.useEffect(() => {
+    // Only set pathname on client side to avoid hydration mismatch
+    if (typeof window !== "undefined" && !providedPathname) {
+      setClientPathname(window.location.pathname);
+    }
+  }, [providedPathname]);
+
+  const pathname = providedPathname ?? clientPathname;
+  const isHorizontal = orientation === "horizontal";
+  const hasShadowNone = className?.includes("shadow-none");
+  const shadowClass = hasShadowNone ? "" : "shadow-base";
+  const ListContainer = ariaLabel ? "nav" : "div";
+
+  return (
+    <div
+      className={cn(
+        !isHorizontal &&
+          cn(
+            width,
+            "bg-background p-1.5 text-sidebar-foreground min-h-full flex flex-col opacity-100",
+            shadowClass,
+            className,
+          ),
+        isHorizontal &&
+          cn(
+            " bg-background w-full p-1.5 text-sidebar-foreground",
+            shadowClass,
+            "flex flex-row items-center p-1.5 overflow-x-auto",
+            className,
+          ),
+      )}
+      {...props}
+    >
+      {/* HEADER */}
+      {!isHorizontal && header && (
+        <div className="shrink-0 flex w-full justify-center">{header}</div>
+      )}
+
+      <div
+        className={cn(
+          !isHorizontal && " flex-1 overflow-auto",
+          isHorizontal && "flex-1 overflow-x-auto",
+        )}
+      >
+        <ListContainer
+          {...(ariaLabel ? { "aria-label": ariaLabel } : {})}
+          className={cn(
+            !isHorizontal && "flex flex-col gap-1",
+            isHorizontal &&
+              "flex flex-row items-center justify-center gap-1 h-full",
+            navClassName,
+          )}
+        >
+          {items.map((item, index) => {
+            if ("type" in item && item.type === "divider") {
+              return renderDivider ? (
+                <div key={`divider-${index}`}>{renderDivider(item, index)}</div>
+              ) : (
+                <DefaultDivider
+                  key={`divider-${index}`}
+                  divider={item}
+                  orientation={orientation}
+                />
+              );
+            }
+
+            const navItem = item as StackNavigationItem;
+            return (
+              <div key={navItem.path || `item-${index}`}>
+                {renderItem ? (
+                  renderItem(navItem)
+                ) : (
+                  <DefaultNavItem
+                    item={navItem}
+                    orientation={orientation}
+                    pathname={pathname}
+                    colorScheme={colorScheme}
+                    onItemClick={onItemClick}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </ListContainer>
+      </div>
+
+      {/* Footer only for vertical */}
+      {!isHorizontal && footer && (
+        <div className="shrink-0 flex justify-center overflow-hidden mx-2 py-1.5 text-3xs text-neutral-fg">
+          {footer}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export { stackNavigationItemVariants };
+export type StackNavigationItemVariants = VariantProps<
+  typeof stackNavigationItemVariants
+>;

@@ -112,3 +112,63 @@ export function children(node: XmlNode, name: string): XmlNode[] {
 export function childText(node: XmlNode, name: string): string {
   return child(node, name)?.text ?? "";
 }
+
+// ── Writing ─────────────────────────────────────────────────────────────────
+// Sitecore's PackageProject writer emits: no XML declaration, no namespaces, no
+// attributes, two-space indentation, CRLF line endings, and self-closing `<Tag />`
+// (with a leading space) for empty elements. `buildDefinition` reproduces that exactly,
+// which is what makes the sample round-trip green — see definition/index.ts.
+
+/** Escape text content. Attributes are never used by this schema, so `"` is left alone. */
+export function escapeXml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Accumulates CRLF-separated, two-space-indented lines. */
+export class XmlWriter {
+  private readonly lines: string[] = [];
+
+  constructor(private readonly indentUnit = "  ") {}
+
+  /** `<name>text</name>`, or `<name />` when the text is empty. */
+  leaf(depth: number, name: string, text = ""): void {
+    this.lines.push(
+      text === ""
+        ? this.pad(depth) + "<" + name + " />"
+        : this.pad(depth) + "<" + name + ">" + escapeXml(text) + "</" + name + ">",
+    );
+  }
+
+  /** Open a container element. */
+  open(depth: number, name: string): void {
+    this.lines.push(this.pad(depth) + "<" + name + ">");
+  }
+
+  close(depth: number, name: string): void {
+    this.lines.push(this.pad(depth) + "</" + name + ">");
+  }
+
+  /**
+   * Write a container, or a self-closing `<name />` when `write` produces nothing.
+   * This is how the schema's many empty `<Include />` / `<Sources />` elements appear.
+   */
+  block(depth: number, name: string, write: () => void): void {
+    const mark = this.lines.length;
+    this.open(depth, name);
+    write();
+    if (this.lines.length === mark + 1) {
+      this.lines[mark] = this.pad(depth) + "<" + name + " />";
+      return;
+    }
+    this.close(depth, name);
+  }
+
+  private pad(depth: number): string {
+    return this.indentUnit.repeat(depth);
+  }
+
+  /** CRLF-joined, with NO trailing newline — the in-package `installer/project` form. */
+  toString(): string {
+    return this.lines.join("\r\n");
+  }
+}

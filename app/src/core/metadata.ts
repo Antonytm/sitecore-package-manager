@@ -17,8 +17,11 @@ const FIELD_FILES: Record<string, keyof PackageMetadata> = {
   "sc_poststep.txt": "postStep",
   "sc_comment.txt": "comment",
 };
-/** Files we read into known fields but that are not part of the semantic model surface. */
-const PASSTHROUGH_FILES = new Set(["sc_revision.txt", "sc_packageid.txt"]);
+/** Carried through unchanged: meaningful to Sitecore, not authored in the designer. */
+const PASSTHROUGH_FILES: Record<string, keyof PackageMetadata> = {
+  "sc_revision.txt": "revision",
+  "sc_packageid.txt": "packageId",
+};
 
 const decode = (b: Uint8Array) => new TextDecoder("utf-8").decode(b);
 const encode = (s: string) => new TextEncoder().encode(s);
@@ -32,10 +35,10 @@ export function readMetadata(files: Map<string, Uint8Array>): PackageMetadata {
   const attributes: Record<string, string> = {};
   for (const [fileName, bytes] of files) {
     const value = decode(bytes);
-    const key = FIELD_FILES[fileName];
+    const key = FIELD_FILES[fileName] ?? PASSTHROUGH_FILES[fileName];
     if (key) {
       (meta as unknown as Record<string, unknown>)[key] = value;
-    } else if (!PASSTHROUGH_FILES.has(fileName)) {
+    } else {
       attributes[fileName] = value;
     }
   }
@@ -49,15 +52,16 @@ export function readMetadata(files: Map<string, Uint8Array>): PackageMetadata {
  * file each named after the attribute.
  */
 export function writeMetadata(meta: PackageMetadata): Map<string, Uint8Array> {
-  const out = new Map<string, Uint8Array>();
-  for (const [fileName, key] of Object.entries(FIELD_FILES)) {
-    out.set(fileName, encode((meta[key] as string | undefined) ?? ""));
-  }
-  for (const file of PASSTHROUGH_FILES) {
-    if (!out.has(file)) out.set(file, encode(""));
+  const named = new Map<string, string>();
+  for (const [fileName, key] of Object.entries({ ...FIELD_FILES, ...PASSTHROUGH_FILES })) {
+    named.set(fileName, (meta[key] as string | undefined) ?? "");
   }
   for (const [name, value] of Object.entries(meta.attributes ?? {})) {
-    out.set(name, encode(value));
+    named.set(name, value);
   }
+  // Sitecore emits metadata/ in ASCII order ("Custom attribute 1" before "sc_author.txt",
+  // uppercase sorting first). Free byte-fidelity, so sort rather than rely on insertion.
+  const out = new Map<string, Uint8Array>();
+  for (const name of [...named.keys()].sort()) out.set(name, encode(named.get(name)!));
   return out;
 }

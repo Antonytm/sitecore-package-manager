@@ -1,98 +1,110 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import type { ApplicationContext } from "@sitecore-marketplace-sdk/client";
-import { useMarketplaceClient } from "@/src/utils/hooks/useMarketplaceClient";
+import Link from "next/link";
+import { mdiPackageVariantClosed, mdiPackageVariantPlus } from "@mdi/js";
+import { useSession, useSessionBootstrap } from "@/src/features/create/store/session";
+import { Button } from "@/src/components/ui/button";
+import { Icon } from "@/src/components/ui/icon";
+import { Spinner } from "@/src/components/ui/spinner";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/src/components/ui/card";
 
 /**
  * Standalone extension — the main entry point for the Sitecore Package Manager app
  * when launched from the Sitecore Cloud Portal.
  *
- * It initializes the Marketplace client, reads the application context, and surfaces
- * the two core capabilities. The actual item read/write will go through the XMC module
- * (XM Cloud Authoring/Management API); see wiki/articles/item-serialization.md and
- * wiki/articles/package-installation.md for what each flow must do.
+ * It surfaces the two core capabilities: Create opens the Package Designer; Install is a
+ * later phase. The Sitecore session is established once in the store and shared with the
+ * designer, rather than each page running its own application.context query.
  */
 function StandaloneExtension() {
-  const { client, error, isInitialized } = useMarketplaceClient();
-  const [appContext, setAppContext] = useState<ApplicationContext>();
-
-  useEffect(() => {
-    if (!error && isInitialized && client) {
-      client
-        .query("application.context")
-        .then((res) => {
-          setAppContext(res.data);
-        })
-        .catch((err) => {
-          console.error("Error retrieving application.context:", err);
-        });
-    } else if (error) {
-      console.error("Error initializing Marketplace client:", error);
-    }
-  }, [client, error, isInitialized]);
+  useSessionBootstrap();
+  const appContext = useSession((s) => s.appContext);
+  const contextLoaded = useSession((s) => s.contextLoaded);
+  const error = useSession((s) => s.connectionError);
 
   return (
-    <main style={{ maxWidth: 820, margin: "0 auto", padding: "2rem 1.5rem" }}>
-      <h1>Sitecore Package Manager</h1>
-      <p style={{ color: "#555" }}>
-        Install and create classic-format Sitecore packages (items) on SitecoreAI / XM
-        Cloud.
+    <main className="mx-auto max-w-4xl p-8">
+      <h1 className="text-2xl font-semibold">Sitecore Package Manager</h1>
+      <p className="mt-1 text-muted-foreground">
+        Install and create classic-format Sitecore packages (items) on SitecoreAI / XM Cloud.
       </p>
 
-      {!isInitialized && !error && <p>Connecting to Sitecore…</p>}
-      {error && <p style={{ color: "red" }}>Error: {String(error)}</p>}
+      {!contextLoaded && !error && (
+        <p className="mt-6 flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner className="size-4" /> Connecting to Sitecore…
+        </p>
+      )}
+      {error && <p className="mt-6 text-sm text-danger-fg">Error: {String(error)}</p>}
 
-      {isInitialized && (
-        <>
-          <section style={{ display: "flex", gap: 16, margin: "1.5rem 0" }}>
-            <article style={card}>
-              <h2 style={{ marginTop: 0 }}>Install a package</h2>
-              <p>Upload a classic Sitecore package and apply its items to the site.</p>
-              {/* TODO: read items/** + properties/items/** from the package and
-                  apply via the XMC module. See wiki/articles/package-installation.md */}
-              <button disabled>Coming soon</button>
-            </article>
+      <section className="mt-8 grid gap-4 sm:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Icon path={mdiPackageVariantClosed} /> Install a package
+            </CardTitle>
+            <CardDescription>
+              Upload a classic Sitecore package and apply its items to the site.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            Reads the package&apos;s serialized items and applies them through the Authoring API.
+          </CardContent>
+          <CardFooter>
+            <Button asChild>
+              <Link href="/standalone-extension/install">Open Installation Wizard</Link>
+            </Button>
+          </CardFooter>
+        </Card>
 
-            <article style={card}>
-              <h2 style={{ marginTop: 0 }}>Create a package</h2>
-              <p>Select items and export them as a classic-format package .zip.</p>
-              {/* TODO: read items via the XMC module and emit the two-layer zip.
-                  See wiki/articles/package-creation.md */}
-              <button disabled>Coming soon</button>
-            </article>
-          </section>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Icon path={mdiPackageVariantPlus} /> Create a package
+            </CardTitle>
+            <CardDescription>
+              Define what a package contains, the way Package Designer did.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            Build a package definition from item, file and security-account sources, then generate
+            the .zip.
+          </CardContent>
+          <CardFooter>
+            <Button asChild>
+              <Link href="/standalone-extension/create">Open Package Designer</Link>
+            </Button>
+          </CardFooter>
+        </Card>
+      </section>
 
-          {appContext && (
-            <details>
-              <summary>Application context</summary>
-              <ul>
-                <li>
-                  <strong>Name:</strong> {appContext.name}
-                </li>
-                <li>
-                  <strong>ID:</strong> {appContext.id}
-                </li>
-                <li>
-                  <strong>Installation ID:</strong> {appContext.installationId}
-                </li>
-                <li>
-                  <strong>Type:</strong> {appContext.type}
-                </li>
-              </ul>
-            </details>
-          )}
-        </>
+      {appContext && (
+        <details className="mt-8 text-sm">
+          <summary className="cursor-pointer text-muted-foreground">Application context</summary>
+          <ul className="mt-2 space-y-1">
+            <li>
+              <strong>Name:</strong> {appContext.name}
+            </li>
+            <li>
+              <strong>ID:</strong> {appContext.id}
+            </li>
+            <li>
+              <strong>Installation ID:</strong> {appContext.installationId}
+            </li>
+            <li>
+              <strong>Type:</strong> {appContext.type}
+            </li>
+          </ul>
+        </details>
       )}
     </main>
   );
 }
-
-const card: React.CSSProperties = {
-  flex: 1,
-  border: "1px solid #e2e2e2",
-  borderRadius: 8,
-  padding: "1rem 1.25rem",
-};
 
 export default StandaloneExtension;

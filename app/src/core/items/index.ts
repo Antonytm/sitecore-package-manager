@@ -137,13 +137,21 @@ export function serializeItemXml(entry: RawItemEntry): string {
 
 // ── semantic helpers (used by the package facade) ───────────────────────────────
 
-/** Decode XML text entities (`&lt; &gt; &amp; &quot; &apos;`) one level. */
+/**
+ * Decode XML text entities (`&lt; &gt; &amp; &quot; &apos;` and numeric refs) one level.
+ *
+ * `&amp;` must be replaced LAST, or `&amp;lt;` would collapse two levels to `<`. Numeric
+ * refs are decoded because escapeAttr emits them for CR/LF/TAB — without this the codec
+ * would not read back its own output.
+ */
 export function decodeXml(s: string): string {
   return s
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9A-Fa-f]+);/g, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#([0-9]+);/g, (_, dec: string) => String.fromCodePoint(parseInt(dec, 10)))
     .replace(/&amp;/g, "&");
 }
 

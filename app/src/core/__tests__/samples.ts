@@ -9,8 +9,21 @@ import { join, resolve } from "node:path";
 export const FILES_DIR = resolve(__dirname, "../../../../files");
 export const SAMPLES_DIR = join(FILES_DIR, "samples", "packages");
 export const EXTRACTED_DIR = join(FILES_DIR, "extracted");
+export const DEFINITIONS_DIR = join(FILES_DIR, "samples", "definitions");
+/** Real content-transfer chunks pulled from a live XM Cloud environment. */
+export const RAIF_DIR = join(FILES_DIR, "samples", "raif");
 
 export const hasSamples = existsSync(SAMPLES_DIR);
+export const hasRaifChunks = existsSync(RAIF_DIR);
+
+/** The `.raif` chunk samples, smallest first so failures report the simplest case. */
+export function sampleChunks(): string[] {
+  if (!hasRaifChunks) return [];
+  return readdirSync(RAIF_DIR)
+    .filter((f) => f.endsWith(".raif"))
+    .map((f) => join(RAIF_DIR, f))
+    .sort((a, b) => statSync(a).size - statSync(b).size);
+}
 
 /** Sample package zips, excluding the 69 MB files-statically by default (size guard). */
 export function samplePackages(includeLarge = false): string[] {

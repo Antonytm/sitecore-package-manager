@@ -14,6 +14,8 @@
 // Faithful (byte-identical) codec: we keep the BOM flag, the ordered key/value pairs as
 // RAW strings, and whether a trailing CRLF is present, so serialize(parse(b)) === b.
 
+import type { Sharing } from "./model";
+
 const BOM0 = 0xef;
 const BOM1 = 0xbb;
 const BOM2 = 0xbf;
@@ -63,8 +65,9 @@ export function getProperty(p: RawProperties, key: string): string | undefined {
   return p.pairs.find((kv) => kv.key === key)?.value;
 }
 
-/** Field sharing as recorded in `fieldproperties`. */
-export type Sharing = "Shared" | "Unversioned" | "Versioned";
+/** Field sharing as recorded in `fieldproperties`. Declared in model.ts so the semantic
+ * model can name it without importing this codec; re-exported here for existing callers. */
+export type { Sharing } from "./model";
 
 /** Parse `fieldproperties` ("{id}:Shared|{id}:Versioned|...") into id → sharing. */
 export function parseFieldSharing(p: RawProperties): Map<string, Sharing> {

@@ -14,22 +14,26 @@
 
 import type {
   PackageModel,
+  BlobModel,
   ItemModel,
   ItemLanguageModel,
   ItemVersionModel,
   FieldModel,
   Guid,
 } from "./model";
-import { readZip, writeZip, ZipArchive } from "./zip";
-import { parseItemXml, getAttr, decodeXml, RawItemEntry } from "./items";
+import type { PackageDefinition } from "./model";
+import { readZip, writeZip, ZipArchive, ZipEntry } from "./zip";
+import { parseItemXml, serializeItemXml, getAttr, decodeXml, RawItemEntry } from "./items";
+import { buildItemEntries } from "./items/build";
 import {
   parseProperties,
+  serializeProperties,
   getProperty,
   parseFieldSharing,
   Sharing,
 } from "./properties";
-import { readMetadata } from "./metadata";
-import { parseDefinition } from "./definition";
+import { readMetadata, writeMetadata } from "./metadata";
+import { parseDefinition, buildDefinition } from "./definition";
 
 const INNER_NAME = "package.zip";
 const GUID_SEG = /^\{[0-9A-Fa-f-]{36}\}$/;
@@ -69,10 +73,15 @@ function parseItemKey(name: string): Omit<ItemEntryRef, "raw"> | null {
   };
 }
 
-function fieldFrom(raw: { attrs: RawItemEntry["fields"][number]["attrs"]; content: string | null }): FieldModel {
+function fieldFrom(
+  raw: { attrs: RawItemEntry["fields"][number]["attrs"]; content: string | null },
+  sharing: Sharing,
+): FieldModel {
   return {
     id: getAttr(raw.attrs, "tfid") ?? "",
     name: getAttr(raw.attrs, "key"),
+    type: getAttr(raw.attrs, "type"),
+    sharing,
     value: raw.content === null ? "" : decodeXml(raw.content),
   };
 }
@@ -82,6 +91,7 @@ function buildItemModel(
   id: Guid,
   refs: ItemEntryRef[],
   sharing: Map<string, Map<string, Sharing>>,
+  fieldProperties: Map<string, string>,
 ): ItemModel {
   // Use the first entry for item-level attributes (stable across versions).
   const head = refs[0].raw;
@@ -100,8 +110,11 @@ function buildItemModel(
     const version: ItemVersionModel = { version: ref.version, fields: [] };
 
     for (const f of ref.raw.fields) {
-      const field = fieldFrom(f);
-      const kind = share.get(field.id) ?? "Versioned";
+      const tfid = getAttr(f.attrs, "tfid") ?? "";
+      // A field absent from `fieldproperties` reads as Versioned — Sitecore itself ships
+      // such orphans (4 entries in the samples carry one).
+      const kind = share.get(tfid) ?? "Versioned";
+      const field = fieldFrom(f, kind);
       if (kind === "Shared") {
         if (!sharedSeen.has(field.id)) {
           sharedSeen.add(field.id);
@@ -116,7 +129,12 @@ function buildItemModel(
         version.fields.push(field);
       }
     }
-    lang.versions.push(version);
+    // A (language, version) pair identifies one entry, so it can only appear once. The
+    // samples prove the writer does not always guarantee that — items-statically carries
+    // `alaris` twice, byte-identical, at entry 16 and again at 154 — and two rows here
+    // would make the rebuilt package emit the duplicate too. Collapse it the way the
+    // generator's `Uniq` sink does: first one wins.
+    if (!lang.versions.some((v) => v.version === version.version)) lang.versions.push(version);
   }
 
   return {
@@ -127,6 +145,12 @@ function buildItemModel(
     parentId: getAttr(head.attrs, "parentid") ?? "",
     masterId: getAttr(head.attrs, "mid"),
     branchId: getAttr(head.attrs, "bid"),
+    database: refs[0].db,
+    key: getAttr(head.attrs, "key"),
+    sortorder: getAttr(head.attrs, "sortorder"),
+    templateName: getAttr(head.attrs, "template"),
+    created: getAttr(head.attrs, "created"),
+    fieldProperties: fieldProperties.get(refs[0].name),
     sharedFields,
     languages: [...languages.values()],
   };
@@ -151,6 +175,7 @@ export async function readPackage(bytes: Uint8Array): Promise<PackageModel> {
   // installer/project → sources (and fall back for metadata if metadata/ was absent)
   const projectEntry = inner.byName.get("installer/project");
   let sources: PackageModel["sources"] = [];
+  const saveProject = projectEntry !== undefined;
   if (projectEntry) {
     const def = parseDefinition(new TextDecoder("utf-8").decode(projectEntry.data));
     sources = def.sources;
@@ -160,7 +185,15 @@ export async function readPackage(bytes: Uint8Array): Promise<PackageModel> {
   // items/ + properties/items/ → ItemModel[]
   const refsById = new Map<Guid, ItemEntryRef[]>();
   const sharingByEntry = new Map<string, Map<string, Sharing>>();
+  const fieldPropsByEntry = new Map<string, string>();
+  const blobs: BlobModel[] = [];
   for (const e of inner.entries) {
+    if (e.name.startsWith("blob/")) {
+      const rest = e.name.slice("blob/".length).split("/");
+      // `blob/<db>/<guid>` and `blob/_file based/<md5-guid>` share a shape.
+      if (rest.length === 2) blobs.push({ id: rest[1], database: rest[0], data: e.data });
+      continue;
+    }
     const key = parseItemKey(e.name);
     if (!key) continue;
     const raw = parseItemXml(new TextDecoder("utf-8").decode(e.data));
@@ -171,7 +204,10 @@ export async function readPackage(bytes: Uint8Array): Promise<PackageModel> {
 
     const propsEntry = inner.byName.get("properties/" + e.name);
     if (propsEntry) {
-      sharingByEntry.set(e.name, parseFieldSharing(parseProperties(propsEntry.data)));
+      const props = parseProperties(propsEntry.data);
+      sharingByEntry.set(e.name, parseFieldSharing(props));
+      const raw = getProperty(props, "fieldproperties");
+      if (raw !== undefined) fieldPropsByEntry.set(e.name, raw);
     }
   }
 
@@ -184,14 +220,90 @@ export async function readPackage(bytes: Uint8Array): Promise<PackageModel> {
           ? -1
           : 1,
     );
-    items.push(buildItemModel(id, refs, sharingByEntry));
+    items.push(buildItemModel(id, refs, sharingByEntry, fieldPropsByEntry));
   }
 
   const provenance: PackageProvenance = { outer };
-  return { metadata, items, sources, provenance };
+  return { metadata, items, sources, saveProject, blobs, provenance };
 }
 
 // ── write ─────────────────────────────────────────────────────────────────────
+
+/** The format marker Sitecore writes; 19 bytes, no trailing newline. */
+const INSTALLER_VERSION = "41.00.000000.000000";
+
+/**
+ * Items with parents before their children.
+ *
+ * The installer re-sorts everything itself (`EntrySorter`, and `ItemInstaller` postpones
+ * items whose parent is not in yet), so this is fidelity rather than correctness — but it
+ * is what Sitecore emits, and a lexicographic sort is demonstrably NOT: the real output
+ * puts `Collection/{513A…}` before `Collection/alaris/…` even though `'a' < '{'`.
+ */
+export function parentsFirst(items: ItemModel[]): ItemModel[] {
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const seen = new Set<Guid>();
+  const out: ItemModel[] = [];
+  const visit = (item: ItemModel) => {
+    if (seen.has(item.id)) return;
+    seen.add(item.id); // before recursing, so a parent cycle terminates
+    const parent = byId.get(item.parentId);
+    if (parent && parent.id !== item.id) visit(parent);
+    out.push(item);
+  };
+  for (const item of items) visit(item);
+  return out;
+}
+
+function textEntry(name: string, text: string): ZipEntry {
+  return { name, data: new TextEncoder().encode(text) };
+}
+
+function archiveOf(entries: ZipEntry[]): ZipArchive {
+  return {
+    entries,
+    byName: new Map(entries.map((e) => [e.name, e])),
+    prefix: new Uint8Array(0),
+    eocd: new Uint8Array(0),
+  };
+}
+
+/** Assemble the inner `package.zip` entry list, in the order Sitecore writes it. */
+function innerEntries(model: PackageModel): ZipEntry[] {
+  const entries: ZipEntry[] = [textEntry("installer/version", INSTALLER_VERSION)];
+
+  if (model.saveProject !== false) {
+    const definition: PackageDefinition = {
+      metadata: model.metadata,
+      saveProject: true,
+      sources: model.sources,
+    };
+    entries.push(textEntry("installer/project", buildDefinition(definition)));
+  }
+
+  // writeMetadata already returns its files in the ASCII order Sitecore emits them.
+  for (const [name, data] of writeMetadata(model.metadata)) {
+    entries.push({ name: "metadata/" + name, data });
+  }
+
+  // Each item version is followed immediately by its own side-car — the real archives
+  // interleave the pair rather than writing two separate blocks.
+  for (const item of parentsFirst(model.items)) {
+    for (const built of buildItemEntries(item)) {
+      entries.push(textEntry(built.key, serializeItemXml(built.item)));
+      entries.push({
+        name: "properties/" + built.key,
+        data: serializeProperties(built.properties),
+      });
+    }
+  }
+
+  for (const blob of model.blobs ?? []) {
+    entries.push({ name: "blob/" + (blob.database ?? "master") + "/" + blob.id, data: blob.data });
+  }
+
+  return entries;
+}
 
 /** Serialize the domain model back to a classic package `.zip` (outer bytes). */
 export async function writePackage(model: PackageModel): Promise<Uint8Array> {
@@ -200,10 +312,11 @@ export async function writePackage(model: PackageModel): Promise<Uint8Array> {
     // Faithful path: replay the preserved raw zip records → byte-identical to the source.
     return writeZip(prov.outer);
   }
-  // From-scratch path (Create flow): regenerate items/metadata into a two-layer zip. Not
-  // byte-identical (no source bytes to match) and not yet required for the read→write
-  // round-trip, so deferred until the Create flow needs it.
-  throw new Error("writePackage: building a package without provenance is not implemented");
+  // From-scratch path (Create flow): build both layers from the model. Deliberately NOT
+  // byte-identical — cross-implementation DEFLATE is not canonical, so the framing differs
+  // even when every entry's content matches exactly. See app/src/ARCHITECTURE.md.
+  const inner = writeZip(archiveOf(innerEntries(model)));
+  return writeZip(archiveOf([{ name: INNER_NAME, data: inner }]));
 }
 
 export * from "./model";
