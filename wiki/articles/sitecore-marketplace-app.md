@@ -58,10 +58,11 @@ and (later) XMC operations.
 ## How items flow (the point of the app)
 
 - **Install**: read `items/**` + `properties/items/**` from a package ([[item-serialization]]),
-  order by dependency ([[package-installation]]), and apply via the **XMC** module
-  (XM Cloud Authoring/Management — create/update items, set template, per-language/version
-  fields). There is no direct DB on XM Cloud, so the legacy `ItemInstaller` is re-implemented
-  against the API.
+  order parents-first ([[package-installation]]), encode them as a `.raif` chunk
+  ([[raif-frame-grammar]]) and push it through the **XMC** module's content-transfer operations
+  ([[content-transfer-api]]). The Authoring API cannot be used for this — it has no way to create
+  an item at a chosen id — so identity is preserved by the transfer format instead
+  ([[content-transfer-install]]).
 - **Create**: read items via XMC and emit the two-layer package zip ([[package-creation]],
   [[package-format]]).
 
@@ -78,8 +79,9 @@ See `README.md`.
 
 ## Open questions to resolve next
 
-- Exact XMC module operations for item create/update (GraphQL Authoring mutations, versions,
-  languages, media/blobs) — capture as we build.
+- ~~Exact XMC module operations for item create/update~~ — settled: Authoring mutations cannot
+  assign item ids, so install goes through `xmc.contentTransfer.*` ([[content-transfer-api]]).
+  Media/blob chunks remain open ([[raif-frame-grammar]]).
 - Whether package *processing* (zip parse/build) runs client-side or needs a server route.
 - Media/blob round-trip on XM Cloud (the `blob/` gap from [[item-serialization]]).
 

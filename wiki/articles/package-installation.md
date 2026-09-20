@@ -96,12 +96,14 @@ Behavior comes from the entry's `BehaviourOptions` (seeded in the definition,
 ## SitecoreAI implementation notes
 
 - On SitecoreAI/XM Cloud there is **no on-prem DB/file system**, so we cannot call
-  `ItemInstaller` directly. Our installer re-implements the item path: read `items/**` +
-  `properties/items/**`, resolve dependency order (parents/templates first, mirroring the
-  `Flush` postpone loop), and apply via the Authoring/Management API (create/update item, set
-  template, per-language/per-version fields, honoring `fieldproperties` sharing).
-- Support the three item modes (`Overwrite`/`Merge`/`SideBySide`) + version modes
-  (`Append`/`Merge`/`Clear`) to match user expectations from the legacy wizard.
+  `ItemInstaller` directly — and the Authoring/Management API cannot stand in for it, because no
+  mutation on that schema can create an item at a chosen id. Our installer reads `items/**` +
+  `properties/items/**`, orders parents-first, and applies them through the **content transfer**
+  format instead, which preserves item GUIDs by construction — see [[content-transfer-install]].
+- The legacy item modes do **not** map cleanly onto that route. Content transfer reconciles per
+  *source*, not per item (`OverwriteExistingItem` / `KeepExistingItem` / `OverrideExistingTree`),
+  there is no `SideBySide` counterpart, and there is no uninstall — so the compensating control is
+  a read-only "what will change" step before the write rather than an undo after it.
 - Carry `blob/` media so media fields resolve. `files/`, `security/`, and post-steps are out of
   scope for an items-only SitecoreAI app (no file system; different security/extensibility model).
 

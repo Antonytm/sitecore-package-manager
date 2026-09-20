@@ -142,10 +142,13 @@ exact blob bytes/headers are an open gap to confirm with a media-containing pack
 - **Writing**: emit one flattened per-version `<item>` entry + one `properties` side-car per
   version; preserve attribute set, the `yyyyMMddThhmmssZ` date format, `|`-separated
   references, and escaped markup for `Image`/`General Link`/`Layout`.
-- On SitecoreAI/XM Cloud there is no direct DB — items must be applied via the Authoring/
-  Management API (e.g. GraphQL item mutations: create/update item, set template, per-language/
-  per-version field values). The `fieldproperties` sharing flags decide whether a field is set
-  once (Shared) or per language/version.
+- On SitecoreAI/XM Cloud there is no direct DB, and items **cannot** be applied via the
+  Authoring/Management API: no mutation on that schema can create an item at a chosen id, so
+  every GUID reference in a package would be severed. They are applied through the content
+  transfer format instead ([[content-transfer-install]], [[raif-frame-grammar]]), which carries
+  the same field values keyed by `tfid`. The `fieldproperties` sharing flags decide whether a
+  field is set once (Shared) or per language/version — in a `.raif` the same distinction is
+  carried by the `(version, language)` pair.
 - Mind blobs/media: a faithful items-only importer must also carry `blob/` entries for media
   fields, or resolve media by ID against the target.
 

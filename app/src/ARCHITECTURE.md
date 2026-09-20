@@ -190,6 +190,11 @@ and are identical on every environment, which is what makes a chunk authorable r
 merely readable. If Sitecore ever rotates them, installs would break silently, so the
 installer should decode a freshly-pulled chunk before trusting the encoder.
 
+The format is documented in full in the wiki — `wiki/articles/raif-chunk-container.md` (the
+envelope), `raif-frame-grammar.md` (the protobuf grammar), `content-transfer-api.md` (the API)
+and `content-transfer-install.md` (how the target applies a chunk, in two phases). Read those
+before changing anything in `core/raif/`.
+
 ## Key seam: `core/model.ts`
 
 `PackageModel` / `ItemModel` is the value passed between all layers. Both convert

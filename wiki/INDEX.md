@@ -19,6 +19,13 @@ One line per article: `- [[slug]] — one-line summary`. Grouped by topic; add/r
 - [[package-installation]] — read + install pipeline, sinks, item install/merge modes, post-steps (and the Update-format pitfall)
 - [[security-accounts]] — users & roles in the definition and package (secondary for SitecoreAI)
 
+## Content transfer (reverse-engineered)
+
+- [[content-transfer-install]] — how our app installs a package on SitecoreAI: why the Authoring API cannot do it, the push pipeline, and the two-phase consume-then-migrate model the target actually uses
+- [[raif-frame-grammar]] — ★ what a `.raif` payload says: the `DataMarker` hierarchy, item descriptors, field values, GUID halves, and sharing as the `(version, language)` pair
+- [[raif-chunk-container]] — the `.raif` envelope: `SCT` header, the chunk-set flag byte, AES-128-CBC with a compiled-in key, raw DEFLATE, and `uint32-LE` frame framing
+- [[content-transfer-api]] — the `xmc.contentTransfer.*` operations, the pull/push lifecycles, and the undocumented rules (`sitecoreContextId`, double-wrapped responses, `blob://`, `BlobState`)
+
 ## Legacy UI / UX (blueprint)
 
 - [[package-designer-ui]] — screen-by-screen UX of the classic Package Designer (create): ribbon, sources panel, metadata, static/dynamic item & file wizards, security accounts, installation options, generate zip
