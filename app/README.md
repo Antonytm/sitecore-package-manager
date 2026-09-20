@@ -1,5 +1,7 @@
 # Sitecore Package Manager
 
+[![Netlify Status](https://api.netlify.com/api/v1/badges/9028cf56-caf3-4e83-9795-0a868f60ec10/deploy-status)](https://app.netlify.com/projects/sitecore-package-manager/deploys)
+
 A **Sitecore Marketplace application** that installs and creates classic-format Sitecore
 packages — focused on **items** — for **SitecoreAI / XM Cloud**. It replaces the sunset
 **Sitecore Package Manager** and **Package Installation Wizard**.
