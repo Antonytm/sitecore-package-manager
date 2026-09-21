@@ -78,6 +78,13 @@ MergeStrategy OverrideExistingItem | KeepExistingItem | LatestWin | OverrideExis
 A transfer produces **one chunk set per distinct `MergeStrategy`** among its data trees, because
 the strategy is written into each chunk set's header frame ([[raif-frame-grammar]]).
 
+`createContentTransfer` takes a **list** of data trees, so several subtrees cost one transfer
+rather than one each — which matters, since every transfer is a create, a poll loop and a delete.
+
+> **A media chunk comes back unencrypted.** `getChunk` deflates media instead of encrypting it,
+> so the `IsMedia` response header is not merely informational: it decides how the body must be
+> opened. See [[raif-chunk-container]].
+
 ## Lifecycle
 
 ```

@@ -189,9 +189,7 @@ Authoring API reports for the same item.
 seconds in. A real value from the samples is `639254560168136729`; if the offset is wrong the
 date lands in year 1 or year 4000, which is the cheapest possible sanity check.
 
-## The blob frame (`101`)
-
-Not present in any sample we hold, so this section is **read from the assemblies, not from bytes**.
+## The blob frame (`101`) ★
 
 `Writing.BlobWriter` emits a marker frame followed by the blob's bytes **raw and inline** — not
 length-prefixed, not protobuf:
@@ -201,21 +199,41 @@ length-prefixed, not protobuf:
 [ n raw bytes ]                                    ← the blob itself, unframed
 ```
 
+```csharp
+class BlobDataMarker : DataMarker {
+    [ProtoMember(3)] string BlobId;    // a STRING, not a Guid message — see below
+}
+```
+
+`BlobId` is field **3** and its wire type is a **length-delimited string**, not the two-`fixed64`
+GUID message every other id in this format uses. A reader that assumes "id ⇒ GUID halves" decodes
+it as garbage. It is the media blob GUID in text form — `new MediaData(mediaItem).MediaId` — the
+same value stored in the item's blob field, which is how a field references its bytes.
+
 `ItemWriter` writes an item's marker and values, then each of that item's blobs immediately after,
 in the same stream — so **blobs are inline in the same chunk payload, directly behind their owning
 item**. The reader never parses them inline: it skips `Length` bytes (above), records
 `BlobInfo { BlobId, Position, Length }`, and later hands out a bounded `SubStream` window when the
 blob is actually needed.
 
-`BlobId` is the **media blob GUID** — `new MediaData(mediaItem).MediaId`, the same value stored in
-the item's blob field, which is how a field references its bytes. **File-based media is skipped
-entirely**: `ToTransferredItem` only emits a blob when `field.IsBlobField && field.HasBlobStream`
-and the media item is not `FileBased`.
+**File-based media is skipped entirely**: `ToTransferredItem` only emits a blob when
+`field.IsBlobField && field.HasBlobStream` and the media item is not `FileBased`.
 
-*(No media-bearing chunk has ever been decoded here — field `101` appears in zero of our three
-samples. The layout above is faithful to the writer's source, but the claim that a media chunk is
-enveloped identically to a non-media one, including its flag byte, is inference until a real media
-pull confirms it.)*
+> **A media chunk is NOT enveloped like an item chunk.** This was the open question here, and the
+> answer is no: media is **deflate-only, never encrypted**, and its flag byte carries an extra
+> bit. Both are covered in [[raif-chunk-container]]. Reading a media payload therefore needs the
+> container branch *and* the skip rule above — getting either wrong desynchronises on the first
+> image.
+
+### The skip rule is not optional
+
+`Length` on a blob marker is the raw byte count with **no prefix of its own** — the one subtype
+where it is not a frame size. A reader that treats the bytes after a `101` marker as another
+length-prefixed frame reads four bytes of image data as a frame length and desynchronises
+immediately, usually reporting a frame that "runs past the payload" several megabytes later.
+
+Our three non-media samples contain **zero** `101` frames, which is why this went unverified for
+so long: every test passed and the rule had never once been exercised.
 
 ## Rules that fail silently
 
@@ -237,11 +255,17 @@ Collected, because each one produces a chunk that parses cleanly and is wrong:
 - `ItemModel.path` is left empty on decode, because the format has no path to give.
 - Field order within an item is our choice, so a re-encoded item is **structurally** equivalent to
   Sitecore's, not byte-identical.
-- We do not write blob frames yet. Until we do, a package's media travels nowhere and media fields
-  resolve to missing media — stated to the user rather than hidden ([[content-transfer-install]]).
+- `readPayload` in `codec.ts` implements the skip rule and returns `{ frames, blobs }`;
+  `readFrames` is the strict reader and still throws on a media payload, deliberately, so a
+  caller cannot use the wrong one by accident.
+- **We read blob frames but do not write them.** The Create path now pulls media bytes out of a
+  content-transfer chunk (`app/src/xmc/media.ts`) and packages them as `blob/<db>/<guid>`
+  entries. The Install path still does not emit `101` frames, so media in a package we install
+  travels nowhere — stated to the user rather than hidden ([[content-transfer-install]]).
 
 ## Sources
 
 - Real chunks from a live XM Cloud environment, `files/samples/raif/` — 331 items across three chunks (primary ground truth: the 801/150/2300 sharing split, `MasterId` on 261 of 300, frame counts 601/60/3, and the absence of field `101` are all counted from these bytes), 2026-09-20.
+- A live media pull of `/sitecore/media library/Project/test`, which is what settled that a media chunk is enveloped differently rather than identically, 2026-09-20.
 - Decompiled `Sitecore.Data.ItemsTransfer.Proto.{DataMarker,ItemDataMarker,BlobDataMarker,HeaderDataMarker,ProtoItemDefinition,ProtoFieldDefinition,ProtoTransferOptions}`, `Reading.{ProtoStreamReader,ItemDataSource,BlobInfo,BlobProcessingStack,SubStream}`, `Writing.{ItemWriter,BlobWriter,HeaderWriter}`, `Sitecore.Data.Transfer.ItemExtensions`, 2026-09-20.
 - Our implementation: `app/src/core/raif/{items,guid,protobuf}.ts` and `app/src/core/raif/__tests__/items.test.ts`, 2026-09-20.

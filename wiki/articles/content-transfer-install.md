@@ -119,6 +119,50 @@ rejected payload would have looked equally clean.
 A chunk is applied as **one unit**. There is no partial success to report: if it fails, nothing
 from it landed, so every item in it is a failure.
 
+### Media
+
+A package's blobs go into the **same payload as the items**, and the target does the rest of the
+work by itself. Three decompiled facts make that true, and each one removes a step we would
+otherwise have had to invent:
+
+1. **Position does not matter.** `ItemDataSourceExtensions.LoadSourceInfo` walks *every* marker in
+   the assembled `.raif` and indexes it — items into `SourceInfo.Items`, blobs into
+   `SourceInfo.Blobs` — before a single item is written. A blob is therefore found wherever it
+   sits, and our writer simply appends the blob markers after the item frames.
+2. **Nothing has to declare which item owns which blob.** `BlobTransferer.TryGetBlobs(item)`
+   collects the identifiers out of the item's own blob **fields** (`f.IsBlobField &&
+   f.ContainsBlobIdentifier()`), and `Transfer` then copies each stream from the transfer source
+   into the target's blob store. The field value *is* the relationship.
+3. **Id spelling does not matter, only the GUID.** Both sides pass through
+   `Sitecore.Data.ItemsTransfer.Utils.FormatBlobId` — `Guid.TryParse` then `ToString("N")` — so
+   `blob://9fda852b-e32f-4775-be01-3e5115a15512` in a field and `9fda852be32f4775be013e5115a15512`
+   in a marker are the same blob. Note the corollary: a value that does *not* parse as a GUID is
+   passed through verbatim, so the two sides must then match exactly.
+
+How the bytes reach the store is worth stating, because it is not a copy at consume time:
+`TransferredBlobProviderCombined` asks the real provider first and falls back to
+`TransferredItemsManager.GetBlobStream`, which hands back a `SubStream` over the `.raif` itself.
+`BlobTransferer.Transfer` then calls `SetBlob` with that stream — but **only** if it is an
+`ITransferredStream`, and it `return`s out of the whole loop the first time a stream comes back
+null. A package missing one blob therefore quietly costs the blobs after it too.
+
+We do **not** use a separate media chunk. `isMedia` picks which inverse the service applies —
+`AzureChunkedDataProvider.SaveChunkAsync` decrypts when it is false and inflates when it is true —
+so an unencrypted media chunk is a second encoding path to get wrong for no gain on this side.
+The assembled file is identical either way.
+
+### Chunking
+
+A chunk set is reassembled by **Azure block-blob concatenation**: `SaveChunkAsync` stages each
+decoded chunk as a block named after its chunk id, and `JoinChunksAsync` commits the blocks
+ordered by that id. The assembled `.raif` is therefore exactly the chunks' payloads end to end,
+which means **the split point is arbitrary** — it may fall inside an item, inside a blob's bytes,
+anywhere. Only the order matters, and the ids must run `0..n-1` with no gaps.
+
+That is why `install.ts` builds one payload and slices it by byte budget rather than by item
+count. Sitecore's own *writer* splits at 300 items or 100 MB of media because it is composing
+chunks from live items; a pusher that already holds the finished payload has no such constraint.
+
 ### The key-rotation pre-flight
 
 Our encoder depends on a key compiled into a Sitecore assembly ([[raif-chunk-container]]). If it
@@ -130,9 +174,6 @@ writing anything** — `exportSubtree` exists for this.
 
 Stated plainly, because a silently partial install is worse than a refused one:
 
-- **Media.** We do not write blob frames yet, so media fields will resolve to missing media. The
-  format supports it ([[raif-frame-grammar]]) and media travels in its own chunks flagged
-  `isMedia`, but no sample we hold contains one.
 - **`files/` sources.** There is no server file system on XM Cloud ([[package-format]]).
 - **`security/` accounts.** Identity lives in the Cloud Portal ([[security-accounts]]).
 - **Post-steps.** A package's `PostStep` is arbitrary .NET; it cannot run here.
@@ -146,9 +187,10 @@ Stated plainly, because a silently partial install is worse than a refused one:
 - `app/src/xmc/install.ts` is this pipeline; `app/src/xmc/plan.ts` is the read-only pre-flight that
   classifies each item as create / update / blocked, and deliberately runs the *same* existence
   pass the installer needs rather than a second, subtly different one.
-- We currently push the whole package as **one chunk**. Sitecore's own writer splits at 300 items
-  (or 100 MB of media), so large packages should follow that rule — and continuation chunks must
-  carry flag byte `0`.
+- `install.ts` slices the payload into 4 MiB chunks and pushes them as chunk ids `0..n-1`; only
+  chunk 0 carries flag bit 0 (opens the chunk set). The budget is about keeping one request small
+  — it travels through the SDK's postMessage bridge before it is ever an HTTP request — not about
+  any limit in the format.
 - `mergeStrategy` is accepted as an option but not yet written into the header frame. Since the
   header's default is `OverrideExistingItem`, that is today's effective behaviour.
 - The per-item collision dialog the legacy wizard offers cannot be implemented on top of the
@@ -161,4 +203,5 @@ Stated plainly, because a silently partial install is worse than a refused one:
 - Enumeration of all 69 Authoring mutations on the live tenant's schema, 2026-09-20.
 - Decompiled `Sitecore.Data.Transfer.{ItemTransferer,SourceTransferer}`, `Sitecore.Data.Transfer.Strategies.{StrategyBuilder,StackableStrategy,OverrideExistingItemStrategy,KeepExistingItemStrategy,OverrideExistingTreeStrategy}`, `Sitecore.Data.Transfer.{ConsumeFileStatus,TransferState}`, `Sitecore.Data.Transfer.ItemExtensions`, `Sitecore.Shell.Framework.Pipelines.DeleteItems.FilterRaifItems`, 2026-09-20.
 - Shipped `App_Config/Sitecore/CMS.Core/Sitecore.ContentTransfer.config` (the one-minute `TransferJobAgent`), 2026-09-20.
-- Our implementation: `app/src/xmc/{install,plan,transfer}.ts`, 2026-09-20.
+- Decompiled `Sitecore.Data.ItemsTransfer.Reading.{ItemDataSourceExtensions,BlobProcessingStack,BlobInfo,SourceInfo,ProtoStreamReader}`, `Sitecore.Data.ItemsTransfer.Proto.{DataMarker,BlobDataMarker,DataMarkerVisitor}`, `Sitecore.Data.ItemsTransfer.Utils.FormatBlobId`, `Sitecore.Data.Blobs.{TransferredBlobProviderSync,TransferredBlobProviderCombined}`, `Sitecore.Data.Transfer.BlobTransferer`, `Sitecore.Framework.Data.Blobs.Azure.AzureStorageBlobProvider` (the `blob://` identifier scheme), `Sitecore.ContentTransfer.Data.Push.{PushService,Providers.AzureChunkedDataProvider,Services.BlobService}` (block staging and commit order), 2026-09-20.
+- Our implementation: `app/src/xmc/{install,plan,transfer}.ts`, `app/src/core/raif/codec.ts`, 2026-09-20.

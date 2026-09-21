@@ -152,9 +152,105 @@ exact blob bytes/headers are an open gap to confirm with a media-containing pack
 - Mind blobs/media: a faithful items-only importer must also carry `blob/` entries for media
   fields, or resolve media by ID against the target.
 
+## Reading an item out of the Authoring API ★
+
+Two things about the live Authoring schema are not guessable from its `.d.ts` files, and
+getting either wrong produces a package that builds, installs and is quietly wrong.
+
+### `fields` is a PAGED connection
+
+`Item.fields` carries `[UsePagination]`, and the page size is `GraphQL.DefaultPageSize`,
+which `Sitecore.GraphQL.NetFxHost` defaults to **50**. An item's field closure is routinely
+larger — the Standard Template alone contributes about ninety fields — so a selection that
+does not pass `first:` receives a PREFIX of the item and nothing says so.
+
+What that looked like in practice: a media item packaged eight fields, all from its own
+Image section, and none of its Statistics section. `__created`, `__revision` and `__updated`
+sit past the cut. They are also the only **versioned** values a media item on an unversioned
+template has, so the `.raif` carried no versioned field at all for it, the target's
+`ResolveItemVersions` — which derives versions purely from field values whose `version != -1`
+— returned nothing, and the installed item had **no version in any language**.
+
+Ask with `fields(first: …)`, and select `totalCount` so a short answer can be recognised
+rather than shipped.
+
+### Sharing is ONE enum, not two booleans
+
+The package format's `fieldproperties` needs `Shared | Unversioned | Versioned` per field.
+The live schema states it once, on the template field:
+
+```
+ItemTemplateField { name type versioning }      versioning: VERSIONED | UNVERSIONED | SHARED
+```
+
+`ItemField` — the node under `item { fields { nodes } }` — carries the *value*
+(`name value fieldId containsStandardValue templateField`) and has **no sharing at all**.
+Neither type has a `shared`/`unversioned` pair. A reader that knows only the boolean pair
+finds nothing, falls through to the template catalog, finds nothing there either, and ends
+up classifying every field as `Versioned`. That is correct for ordinary content, which is
+why it went unnoticed, and wrong for every media item: `Unversioned/Image`
+(`{F1828A2C-7E5D-4BBD-98CA-320474871548}`) keeps blob, size, extension and the rest
+unversioned, and `FieldIDs.UnversionedBlob` says so in its own name.
+
+### `isFallback` throws outside a site's content tree ★
+
+`Item.isFallback` is unusable for templates, media and layout, and no selection can make it
+work. The resolver reaches for a site context first:
+
+```csharp
+// ItemAdapter
+public bool IsFallback {
+  get { using (new SiteContextSwitcher(SiteContext))
+        return _sitecoreItem.Database.GetItem(ID, Language).IsFallback; } }
+
+private SiteContext SiteContext {
+  get { Site site = _sitecoreItem.FindSiteForItem();
+        _lazySiteContext = new SiteContext(new SiteInfo(site.Properties));   // ← NRE
+        ... } }
+
+// ItemExtensions
+public static Site FindSiteForItem(this Item item) =>
+  GetSiteBasePaths().FirstOrDefault(s => path.StartsWith(s.BasePath, OrdinalIgnoreCase))?.Site;
+```
+
+`FindSiteForItem` returns **null** for any path no site's base path covers, and
+`site.Properties` then dereferences it. The answer is
+*"Object reference not set to an instance of an object."* — a resolver error on a non-null
+field, so it propagates to the nearest nullable parent and takes the **whole item** with it.
+
+That makes the failure structural, not incidental: everything under `/sitecore/templates`,
+`/sitecore/media library`, `/sitecore/layout` and `/sitecore/system` fails identically,
+every time, while `/sitecore/content/<site>/…` succeeds. Exporting a template folder hits it
+once per item.
+
+The workaround is the general one — retry the failed items with the selection dropped
+([[package-creation]]) — plus two things about how it is reported:
+
+- The flag has exactly one consumer: the extra-language pass, which refuses to package a
+  version that is only a fallback. The PRIMARY language never consults it, so a
+  single-language export that loses the flag has lost nothing and must not say otherwise.
+- Because whole regions fail identically, the caveats are grouped by *what was lost and
+  where*, naming a few paths and counting the rest, rather than repeated per item.
+
 ## Sources
 
 - Samples `items-statically-1.0.0.zip`, `items-dynamically-1.0.0.zip` (extracted), incl. the
   `Home Page Hero` item for `Image`/`General Link` encoding, 2026-06-21.
 - Decompiled `Sitecore.Data.Items.ItemSerializer`, `Sitecore.Install.Items.ItemToEntryConverter`,
   `Sitecore.Install.Items.LegacyItemUnpacker`, `Sitecore.Install.BlobData.BlobInstaller`, 2026-06-21.
+- Decompiled `Sitecore.GraphQL.Schema.Authoring.Items.Types.Item.GetFields` (the `ownFields` /
+  `excludeStandardFields` / `[UsePagination]` signature), `…Items.Types.ItemFieldType.V2.ItemField`,
+  `…ItemTemplates.Types.{ItemTemplate,ItemTemplateField}`,
+  `Sitecore.GraphQL.Services.Abstractions.Model.FieldVersioning`,
+  `Sitecore.Extensions.HotChocolate.Pagination.QueryableConnectionResolver`, and
+  `Sitecore.GraphQL.NetFxHost.DependencyInjection.ServiceConfigurator` (`GraphQL.DefaultPageSize` = 50),
+  2026-09-20.
+- A generated package read back off disk: `/sitecore/media library/Project/test/1067555` on
+  `{F1828A2C-…}` (`TemplateIDs.UnversionedImage`) carried 8 fields, all marked `Versioned`, and
+  no Statistics section — the primary evidence for both defects, 2026-09-20.
+- Decompiled `Sitecore.Data.DataProviders.CompositeDataProvider.ResolveItemVersions` — versions
+  are derived from field values with `Version != -1`, which is why an item with no versioned
+  value installs with no version, 2026-09-20.
+- Decompiled `Sitecore.GraphQL.Services.Model.ItemAdapter.{IsFallback,SiteContext}` and
+  `Sitecore.GraphQL.Services.Extensions.ItemExtensions.FindSiteForItem` — the null site that
+  makes `isFallback` throw for every item outside a site's base path, 2026-09-21.
