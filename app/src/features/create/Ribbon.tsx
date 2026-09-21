@@ -48,6 +48,7 @@ import {
   isDynamic,
   isReadOnlyKind,
 } from "./sources";
+import { EnvironmentBar } from "@/src/features/shared/EnvironmentBar";
 import { useDesigner, useSelectedSource } from "./store/hooks";
 import { useSession } from "./store/session";
 
@@ -234,6 +235,18 @@ export function Ribbon({ onOpen, onSave, onSaveAs }: Props) {
             </Group>
           </>
         )}
+
+        {/* Right edge. The designer used to spend a whole header row on the project name,
+            restating a title the Cloud Portal's own chrome already shows above the iframe.
+            The ribbon is two-tier and had the vertical room going spare, so both lines live
+            here instead and the row is gone. */}
+        <div className="ml-auto flex shrink-0 flex-col items-end justify-between gap-1 py-0.5 pl-2">
+          <p className="max-w-[20rem] truncate text-sm">
+            {projectName ?? "Untitled project"}
+            {dirty && <span className="text-muted-foreground"> — unsaved changes</span>}
+          </p>
+          <EnvironmentBar className="-mr-1.5" />
+        </div>
       </div>
     </TooltipProvider>
   );

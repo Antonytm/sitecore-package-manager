@@ -30,6 +30,8 @@ export interface InstallPlan {
   creating: number;
   updating: number;
   blocked: number;
+  /** Media blobs the package carries, which install alongside the items. */
+  media: number;
   /** Templates referenced by the package that are neither in it nor on the target. */
   missingTemplates: Guid[];
   /** Problems that are not attributable to a single item. */
@@ -96,7 +98,7 @@ export async function findExisting(
     for (const error of result.errors) {
       // Attribute the failure to its alias when the server says which one broke.
       const alias = error.path?.[0];
-      const index = alias ? Number(alias.replace("a", "")) : NaN;
+      const index = alias === undefined ? NaN : Number(String(alias).replace("a", ""));
       const id = Number.isFinite(index) ? batch[index] : undefined;
       problems.push((id ? id + ": " : "") + (error.message ?? "unknown error"));
     }
@@ -157,6 +159,7 @@ export async function planInstall(
     creating: entries.filter((e) => e.disposition === "create").length,
     updating: entries.filter((e) => e.disposition === "update").length,
     blocked: entries.filter((e) => e.disposition === "blocked").length,
+    media: pkg.blobs?.length ?? 0,
     missingTemplates,
     problems,
   };

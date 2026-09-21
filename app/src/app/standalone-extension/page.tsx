@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { mdiPackageVariantClosed, mdiPackageVariantPlus } from "@mdi/js";
 import { useSession, useSessionBootstrap } from "@/src/features/create/store/session";
+import { EnvironmentBar } from "@/src/features/shared/EnvironmentBar";
 import { Button } from "@/src/components/ui/button";
 import { Icon } from "@/src/components/ui/icon";
 import { Spinner } from "@/src/components/ui/spinner";
@@ -25,13 +26,15 @@ import {
  */
 function StandaloneExtension() {
   useSessionBootstrap();
-  const appContext = useSession((s) => s.appContext);
   const contextLoaded = useSession((s) => s.contextLoaded);
   const error = useSession((s) => s.connectionError);
 
   return (
     <main className="mx-auto max-w-4xl p-8">
-      <h1 className="text-2xl font-semibold">Sitecore Package Manager</h1>
+      <div className="flex items-start justify-between gap-4">
+        <h1 className="text-2xl font-semibold">Sitecore Package Manager</h1>
+        <EnvironmentBar className="mt-1" />
+      </div>
       <p className="mt-1 text-muted-foreground">
         Install and create classic-format Sitecore packages (items) on SitecoreAI / XM Cloud.
       </p>
@@ -83,26 +86,6 @@ function StandaloneExtension() {
           </CardFooter>
         </Card>
       </section>
-
-      {appContext && (
-        <details className="mt-8 text-sm">
-          <summary className="cursor-pointer text-muted-foreground">Application context</summary>
-          <ul className="mt-2 space-y-1">
-            <li>
-              <strong>Name:</strong> {appContext.name}
-            </li>
-            <li>
-              <strong>ID:</strong> {appContext.id}
-            </li>
-            <li>
-              <strong>Installation ID:</strong> {appContext.installationId}
-            </li>
-            <li>
-              <strong>Type:</strong> {appContext.type}
-            </li>
-          </ul>
-        </details>
-      )}
     </main>
   );
 }

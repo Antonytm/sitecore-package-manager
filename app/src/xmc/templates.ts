@@ -49,6 +49,8 @@ interface RawTemplateField {
   type?: string;
   shared?: boolean;
   unversioned?: boolean;
+  /** `VERSIONED | UNVERSIONED | SHARED` — how the live Authoring schema states sharing. */
+  versioning?: string;
   fields?: { nodes?: { name?: string; value?: string }[] };
 }
 
@@ -69,7 +71,31 @@ interface Rung {
  * `ownFields`) where it can, because `fieldproperties` covers the inherited closure —
  * 129 tokens for an item with 25 fields — and own-fields-only cannot reach it.
  */
+/**
+ * How many template fields to ask for at once.
+ *
+ * `ItemTemplate.fields` is `[UsePagination]`, so it answers one page — 50 by default on
+ * this endpoint. A template whose closure is larger would come back silently short, and a
+ * field missing from the catalog is a field whose sharing we then guess.
+ */
+const FIELD_PAGE = 1000;
+
 const RUNGS: Rung[] = [
+  {
+    // The live Authoring schema's own spelling: one `versioning` enum on the template
+    // field, no boolean pair anywhere. Tried first because it is the only rung that
+    // actually answers on XM Cloud.
+    id: "versioning",
+    document: `
+      query TemplateFields($templateId: ID) {
+        template(where: { templateId: $templateId }) {
+          templateId
+          name
+          fields(first: ${FIELD_PAGE}) { nodes { templateFieldId name type versioning } }
+        }
+      }
+    `,
+  },
   {
     id: "flags",
     document: `
@@ -77,7 +103,7 @@ const RUNGS: Rung[] = [
         template(where: { templateId: $templateId }) {
           templateId
           name
-          fields { nodes { templateFieldId name type shared unversioned } }
+          fields(first: ${FIELD_PAGE}) { nodes { templateFieldId name type shared unversioned } }
         }
       }
     `,
@@ -89,7 +115,7 @@ const RUNGS: Rung[] = [
         template(where: { templateId: $templateId }) {
           templateId
           name
-          ownFields { nodes { templateFieldId name type shared unversioned } }
+          ownFields(first: ${FIELD_PAGE}) { nodes { templateFieldId name type shared unversioned } }
         }
       }
     `,
@@ -103,7 +129,7 @@ const RUNGS: Rung[] = [
         template(where: { templateId: $templateId }) {
           templateId
           name
-          fields {
+          fields(first: ${FIELD_PAGE}) {
             nodes {
               templateFieldId
               name
@@ -130,6 +156,10 @@ function sharingOf(raw: RawTemplateField): Sharing | undefined {
     if (raw.shared) return "Shared";
     return raw.unversioned ? "Unversioned" : "Versioned";
   }
+  const versioning = raw.versioning?.toUpperCase();
+  if (versioning === "SHARED") return "Shared";
+  if (versioning === "UNVERSIONED") return "Unversioned";
+  if (versioning === "VERSIONED") return "Versioned";
   const nested = raw.fields?.nodes;
   if (!nested || nested.length === 0) return undefined;
   const value = (name: string) =>

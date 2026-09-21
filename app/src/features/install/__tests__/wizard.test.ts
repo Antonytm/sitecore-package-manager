@@ -33,6 +33,7 @@ const emptyPlan = (over: Partial<InstallPlan> = {}): InstallPlan => ({
   creating: 0,
   updating: 0,
   blocked: 0,
+  media: 0,
   missingTemplates: [],
   problems: [],
   ...over,
@@ -142,7 +143,7 @@ describe("the store", () => {
     const s = store.getState();
     s.loadPackage("a.zip", pkgWith());
     s.appendLog("something");
-    s.setResult({ installed: 1, skipped: 0, failed: [] });
+    s.setResult({ installed: 1, skipped: 0, media: 0, failed: [] });
     store.getState().loadPackage("b.zip", pkgWith());
     expect(store.getState().log).toEqual([]);
     expect(store.getState().result).toBeUndefined();
@@ -208,11 +209,10 @@ describe("copy", () => {
     expect(notApplied(pkgWith())).toEqual([]);
   });
 
-  it("names media blobs as unapplied rather than implying they installed", () => {
-    const text = notApplied(
-      pkgWith({ blobs: [{ id: "{A}", data: new Uint8Array() }] }),
-    ).join(" ");
-    expect(text).toMatch(/missing media/);
+  it("does not warn about media, which installs with the items", () => {
+    // Media used to be listed here as carried-but-unapplied. It now travels in the same
+    // payload and the target's own `BlobTransferer` writes it, so a warning would be wrong.
+    expect(notApplied(pkgWith({ blobs: [{ id: "{A}", data: new Uint8Array() }] }))).toEqual([]);
   });
 
   it("reports a result without repeating one shared failure per item", () => {
@@ -220,13 +220,13 @@ describe("copy", () => {
       item: { id: "{" + n + "}" } as never,
       error: "same reason",
     }));
-    expect(resultHeadline({ installed: 0, skipped: 0, failed })).toBe("The installation failed.");
-    expect(resultDetail({ installed: 0, skipped: 0, failed })).toEqual(["same reason"]);
+    expect(resultHeadline({ installed: 0, skipped: 0, media: 0, failed })).toBe("The installation failed.");
+    expect(resultDetail({ installed: 0, skipped: 0, media: 0, failed })).toEqual(["same reason"]);
   });
 
   it("pluralises the success headline", () => {
-    expect(resultHeadline({ installed: 1, skipped: 0, failed: [] })).toBe("Installed 1 item.");
-    expect(resultHeadline({ installed: 2, skipped: 0, failed: [] })).toBe("Installed 2 items.");
+    expect(resultHeadline({ installed: 1, skipped: 0, media: 0, failed: [] })).toBe("Installed 1 item.");
+    expect(resultHeadline({ installed: 2, skipped: 0, media: 0, failed: [] })).toBe("Installed 2 items.");
   });
 
   it("falls back to a readable package title", () => {

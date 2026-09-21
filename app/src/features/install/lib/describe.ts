@@ -36,6 +36,9 @@ export function planSummary(plan: InstallPlan | undefined): string {
   if (plan.updating) parts.push(plural(plan.updating, "existing item") + " updated");
   if (plan.blocked) parts.push(plural(plan.blocked, "item") + " blocked");
   if (parts.length === 0) return "This package contains nothing that can be installed.";
+  // Media is named separately rather than folded into the item counts: a media item is one
+  // of those items, and the file it points at is the part people actually worry about.
+  if (plan.media) parts.push(plural(plan.media, "media file") + " applied");
   return parts.join(", ") + ".";
 }
 
@@ -80,14 +83,6 @@ export function notApplied(pkg: PackageModel | undefined): string[] {
     );
   }
 
-  const blobs = pkg.blobs?.length ?? 0;
-  if (blobs > 0) {
-    out.push(
-      plural(blobs, "media blob") +
-        " is carried by this package; media is not applied yet, so those fields will point at missing media.",
-    );
-  }
-
   return out;
 }
 
@@ -116,7 +111,8 @@ export function resultHeadline(result: InstallResult | undefined): string {
   if (!result) return "";
   if (result.failed.length > 0) return "The installation failed.";
   if (result.installed === 0) return "Nothing was installed.";
-  return "Installed " + plural(result.installed, "item") + ".";
+  const media = result.media > 0 ? " and " + plural(result.media, "media file") : "";
+  return "Installed " + plural(result.installed, "item") + media + ".";
 }
 
 export function resultDetail(result: InstallResult | undefined): string[] {

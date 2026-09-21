@@ -6,6 +6,7 @@
 // does not contain all live here.
 
 import type {
+  BlobModel,
   ItemModel,
   PackageDefinition,
   PackageModel,
@@ -32,12 +33,17 @@ export function defaultPackageName(definition: PackageDefinition): string {
 export function toPackageModel(
   definition: PackageDefinition,
   items: ItemModel[],
+  blobs: BlobModel[] = [],
 ): PackageModel {
   return {
     metadata: definition.metadata,
     items,
     sources: definition.sources,
     saveProject: definition.saveProject,
+    // `writePackage` turns these into `blob/<db>/<guid>` entries. Omitted rather than
+    // empty so a package with no media is byte-identical to what it was before media
+    // was fetched at all.
+    ...(blobs.length > 0 ? { blobs } : {}),
   };
 }
 

@@ -84,18 +84,40 @@ function callerFor(ctx: XmcContext, options: TransferOptions): TransferCall {
     kind === "query" ? client.query(operation, params) : client.mutate(operation, params);
 }
 
-/** Peel the SDK envelope off the service envelope. */
-function unwrap(result: unknown): unknown {
+/**
+ * Describe an error body that is not the RFC-7807 shape we expect.
+ *
+ * Falling back to a bare "request failed" throws away the only evidence there is. Whatever
+ * the service did send is more useful than a fixed string, so summarise it.
+ */
+function describeError(e: unknown): string {
+  if (typeof e === "string" && e.trim()) return e;
+  if (!e || typeof e !== "object") return "request failed";
+  const record = e as Record<string, unknown>;
+  const parts = Object.entries(record)
+    .filter(([, v]) => v !== null && v !== undefined && v !== "")
+    .map(([k, v]) => k + "=" + (typeof v === "object" ? JSON.stringify(v) : String(v)));
+  return parts.length > 0 ? parts.join(" ") : "request failed";
+}
+
+/**
+ * Peel the SDK envelope off the service envelope.
+ *
+ * Takes the operation name because every transfer error used to be labelled
+ * "content transfer" regardless of which of the eight calls produced it — which is no
+ * label at all when a pull fails somewhere in a five-call sequence.
+ */
+function unwrap(result: unknown, operation: string): unknown {
   let level = result;
   for (let i = 0; i < 3; i++) {
     if (!level || typeof level !== "object") return level;
     const record = level as Record<string, unknown>;
     if (record.error) {
       const e = record.error as Record<string, unknown>;
+      const described = e.title ?? e.detail ? String(e.title ?? e.detail) : describeError(e);
       throw new TransferError(
-        String(e.title ?? e.detail ?? "request failed") +
-          (e.status ? " (" + String(e.status) + ")" : ""),
-        "content transfer",
+        described + (e.status ? " (" + String(e.status) + ")" : ""),
+        operation,
       );
     }
     if (!("data" in record)) return level;
@@ -124,12 +146,18 @@ export async function createTransfer(
   options: TransferOptions = {},
 ): Promise<void> {
   options.signal?.throwIfAborted();
-  await callerFor(ctx, options)("mutate", "xmc.contentTransfer.createContentTransfer", {
-    params: {
-      body: { transferId, configuration: { dataTrees } },
-      query: queryOf(ctx),
-    },
-  });
+  // Unwrapped, not merely awaited. This used to discard the response, so a refused create
+  // looked like a success and the run failed several calls later inside the status poll —
+  // pointing at the wrong operation entirely.
+  unwrap(
+    await callerFor(ctx, options)("mutate", "xmc.contentTransfer.createContentTransfer", {
+      params: {
+        body: { transferId, configuration: { dataTrees } },
+        query: queryOf(ctx),
+      },
+    }),
+    "createContentTransfer",
+  );
 }
 
 export async function getStatus(
@@ -142,6 +170,7 @@ export async function getStatus(
     await callerFor(ctx, options)("query", "xmc.contentTransfer.getContentTransferStatus", {
       params: { path: { transferId }, query: queryOf(ctx) },
     }),
+    "getContentTransferStatus",
   ) as
     | {
         State?: string;
@@ -201,6 +230,7 @@ export async function getChunk(
         query: queryOf(ctx),
       },
     }),
+    "getChunk",
   );
   return toBytes(raw, "getChunk");
 }
@@ -250,6 +280,7 @@ export async function completeChunkSet(
     await callerFor(ctx, options)("mutate", "xmc.contentTransfer.completeChunkSetTransfer", {
       params: { path: { transferId, chunksetId: chunkSetId }, query: queryOf(ctx) },
     }),
+    "completeChunkSetTransfer",
   ) as { ContentTransferFileName?: string } | undefined;
 
   const name = raw?.ContentTransferFileName;
@@ -330,6 +361,7 @@ export async function getBlobState(
     await callerFor(ctx, options)("query", "xmc.contentTransfer.getBlobState", {
       params: { query: { ...queryOf(ctx), fileName } },
     }),
+    "getBlobState",
   ) as { BlobState?: string; Error?: string | null; ConsumedName?: string | null } | undefined;
 
   // The service answers `BlobState`, not the `status` the SDK's own types advertise.
@@ -387,18 +419,32 @@ export async function exportSubtree(
   itemPath: string,
   options: TransferOptions & { scope?: TreeScope } = {},
 ): Promise<Uint8Array[]> {
+  return exportPaths(ctx, [itemPath], options);
+}
+
+/**
+ * Pull several subtrees in ONE transfer and return every chunk.
+ *
+ * `createContentTransfer` takes a list of data trees, so N paths cost one transfer rather
+ * than N — which matters because each transfer is a create, a poll loop and a delete. The
+ * chunks come back interleaved and are identified by what is inside them, not by order.
+ */
+export async function exportPaths(
+  ctx: XmcContext,
+  itemPaths: string[],
+  options: TransferOptions & { scope?: TreeScope } = {},
+): Promise<Uint8Array[]> {
+  if (itemPaths.length === 0) return [];
   const transferId = newTransferId();
   try {
     await createTransfer(
       ctx,
       transferId,
-      [
-        {
-          itemPath,
-          scope: options.scope ?? "SingleItem",
-          mergeStrategy: "OverrideExistingItem",
-        },
-      ],
+      itemPaths.map((itemPath) => ({
+        itemPath,
+        scope: options.scope ?? "SingleItem",
+        mergeStrategy: "OverrideExistingItem" as const,
+      })),
       options,
     );
     const status = await awaitTransfer(ctx, transferId, options);

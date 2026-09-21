@@ -22,7 +22,8 @@
 //  3. This module stays pure — documents and checks here, requests in export.ts — so the
 //     whole ladder is unit-testable against fixture responses.
 
-import type { SchemaShape } from "./introspect";
+import type { Sharing } from "../core/model";
+import type { SchemaShape, TypeShape } from "./introspect";
 import { pick } from "./introspect";
 
 /** The distinct things generation needs to ask for. */
@@ -45,8 +46,18 @@ export interface ProbeField {
   containsStandardValue?: boolean;
   shared?: boolean;
   unversioned?: boolean;
+  /**
+   * `Versioned | Unversioned | Shared` as one enum, which is how the live Authoring schema
+   * states sharing — `ItemTemplateField` has a `versioning` enum and no boolean pair.
+   */
+  versioning?: string;
   /** The field's DEFINITION, where a real schema keeps its type and sharing flags. */
-  templateField?: { type?: string; shared?: boolean; unversioned?: boolean } | null;
+  templateField?: {
+    type?: string;
+    shared?: boolean;
+    unversioned?: boolean;
+    versioning?: string;
+  } | null;
 }
 
 /**
@@ -55,12 +66,25 @@ export interface ProbeField {
  * connection while its `versions` is a list of Item. Aliases can rename a field but cannot
  * reshape it, so both shapes are accepted here and normalised by {@link listOf}.
  */
-export type Many<T> = { nodes?: T[] } | T[] | null | undefined;
+export type Many<T> = { nodes?: T[]; totalCount?: number } | T[] | null | undefined;
 
 /** Normalise a connection or a plain list to an array. */
 export function listOf<T>(value: Many<T>): T[] {
   if (!value) return [];
   return Array.isArray(value) ? value : (value.nodes ?? []);
+}
+
+/**
+ * How many entries the endpoint says exist, when the connection reports it.
+ *
+ * A connection is PAGED. This endpoint's default page is 50 (`GraphQL.DefaultPageSize`),
+ * and an item's field closure is routinely larger than that, so a selection that does not
+ * ask for the whole set silently receives a prefix of it. `totalCount` is the only way to
+ * tell a complete answer from a truncated one.
+ */
+export function totalOf<T>(value: Many<T>): number | undefined {
+  if (!value || Array.isArray(value)) return undefined;
+  return typeof value.totalCount === "number" ? value.totalCount : undefined;
 }
 
 export interface ProbeItem {
@@ -87,6 +111,8 @@ export interface Discovered {
   ownValue?: string;
   shared?: string;
   unversioned?: string;
+  /** A single enum naming the sharing, where the schema has one instead of two booleans. */
+  versioning?: string;
   versions?: string;
   versionNumber?: string;
   languages?: string;
@@ -99,7 +125,12 @@ export interface Discovered {
   tfType?: string;
   tfShared?: string;
   tfUnversioned?: string;
+  tfVersioning?: string;
   fieldsAreConnection: boolean;
+  /** The argument that asks a connection for more than one page, when it takes one. */
+  fieldsFirstArg?: string;
+  /** True when the fields connection reports `totalCount`, so truncation is detectable. */
+  fieldsHaveTotal?: boolean;
   versionsAreConnection: boolean;
 }
 
@@ -119,6 +150,7 @@ const CANDIDATES = {
   ],
   shared: ["shared", "isShared"],
   unversioned: ["unversioned", "isUnversioned"],
+  versioning: ["versioning", "sharing"],
   versions: ["versions", "itemVersions"],
   versionNumber: ["version", "versionNumber"],
   languages: ["languages", "itemLanguages"],
@@ -129,7 +161,16 @@ const CANDIDATES = {
   tfType: ["type", "fieldType", "typeName"],
   tfShared: ["shared", "isShared"],
   tfUnversioned: ["unversioned", "isUnversioned"],
+  tfVersioning: ["versioning", "sharing"],
+  first: ["first", "take", "limit"],
 };
+
+/** The paging argument a field takes, if it takes one we recognise. */
+function firstArgOf(shape: TypeShape | undefined, fieldName: string | undefined): string | undefined {
+  const args = fieldName ? shape?.args?.get(fieldName) : undefined;
+  if (!args) return undefined;
+  return CANDIDATES.first.find((name) => args.has(name));
+}
 
 /** What this schema offers, resolved to concrete names. */
 export function discover(schema: SchemaShape | undefined): Discovered {
@@ -144,6 +185,7 @@ export function discover(schema: SchemaShape | undefined): Discovered {
     ownValue: pick(field, CANDIDATES.ownValue),
     shared: pick(field, CANDIDATES.shared),
     unversioned: pick(field, CANDIDATES.unversioned),
+    versioning: pick(field, CANDIDATES.versioning),
     versions: pick(item, CANDIDATES.versions),
     versionNumber: undefined, // resolved against the version node, which is an item
     languages: pick(item, CANDIDATES.languages),
@@ -154,7 +196,10 @@ export function discover(schema: SchemaShape | undefined): Discovered {
     tfType: pick(templateField, CANDIDATES.tfType),
     tfShared: pick(templateField, CANDIDATES.tfShared),
     tfUnversioned: pick(templateField, CANDIDATES.tfUnversioned),
+    tfVersioning: pick(templateField, CANDIDATES.tfVersioning),
     fieldsAreConnection: schema.fieldsAreConnection,
+    fieldsFirstArg: firstArgOf(item, pick(item, CANDIDATES.fields)),
+    fieldsHaveTotal: schema.fieldsConnection?.fields.has("totalCount") ?? false,
     versionsAreConnection: schema.versionsAreConnection,
   };
 }
@@ -183,11 +228,33 @@ function alias(aliasName: string, realName: string): string {
   return aliasName === realName ? realName : aliasName + ": " + realName;
 }
 
+/**
+ * How many fields to ask a connection for in one go.
+ *
+ * A connection answers ONE PAGE. This endpoint's default is 50 — `GraphQL.DefaultPageSize`,
+ * read in `Sitecore.GraphQL.NetFxHost` — and an item's field closure is comfortably larger:
+ * the Standard Template alone contributes about ninety. The visible symptom was a media
+ * item that packaged eight fields and none of its Statistics section, because `__created`,
+ * `__revision` and `__updated` sit past the cut. They are also the only VERSIONED values a
+ * media item on an unversioned template has, so losing them meant the installed item had no
+ * version at all.
+ *
+ * Asked for explicitly rather than paged through: one round trip per item per language is
+ * already the cost model here, and no real template approaches this number.
+ */
+const FIELD_PAGE = 1000;
+
 /** Wrap a field sub-selection in the connection shape this schema uses. */
 function fieldsBlock(d: Discovered, inner: string): string | undefined {
   if (!d.fieldsOn) return undefined;
-  const body = d.fieldsAreConnection ? "nodes { " + inner + " }" : inner;
-  return alias("fields", d.fieldsOn) + " { " + body + " }";
+  if (!d.fieldsAreConnection) return alias("fields", d.fieldsOn) + " { " + inner + " }";
+
+  // Only page when introspection saw the argument. Sending `first:` at a connection that
+  // does not take one turns a working query into a validation error, and `fieldId` is a
+  // hard stop — a schema we cannot page is still a schema we can read.
+  const paging = d.fieldsFirstArg ? "(" + d.fieldsFirstArg + ": " + FIELD_PAGE + ")" : "";
+  const total = d.fieldsHaveTotal ? " totalCount" : "";
+  return alias("fields", d.fieldsOn) + paging + " { nodes { " + inner + " }" + total + " }";
 }
 
 /** The always-present part of a field selection: its name and value. */
@@ -216,13 +283,24 @@ function fieldProp(
   return undefined;
 }
 
-/** The shared/unversioned sub-selection, wherever this schema keeps it. */
+/**
+ * The sharing sub-selection, wherever this schema keeps it.
+ *
+ * Four shapes, best first. The live Authoring schema is the LAST of them: `ItemField` has
+ * no sharing at all and `ItemTemplateField` states it as a single `versioning` enum
+ * (`VERSIONED | UNVERSIONED | SHARED`). Knowing only the boolean pair, this returned
+ * undefined, the capability read as unsupported, and every field fell through to the
+ * catalog — which asked for the same two booleans and also found nothing. Everything then
+ * defaulted to Versioned, which is right for ordinary content and wrong for every media
+ * item.
+ */
 function sharingProps(d: Discovered): string | undefined {
   const direct = [
     d.shared ? alias("shared", d.shared) : undefined,
     d.unversioned ? alias("unversioned", d.unversioned) : undefined,
   ].filter(Boolean);
   if (direct.length > 0) return direct.join(" ");
+  if (d.versioning) return alias("versioning", d.versioning);
 
   const viaTemplate = [
     d.tfShared ? alias("shared", d.tfShared) : undefined,
@@ -231,6 +309,23 @@ function sharingProps(d: Discovered): string | undefined {
   if (viaTemplate.length > 0 && d.templateFieldOn) {
     return d.templateFieldOn + " { " + viaTemplate.join(" ") + " }";
   }
+  if (d.tfVersioning && d.templateFieldOn) {
+    return d.templateFieldOn + " { " + alias("versioning", d.tfVersioning) + " }";
+  }
+  return undefined;
+}
+
+/**
+ * One enum value → our `Sharing`.
+ *
+ * Case-insensitive: HotChocolate serialises `FieldVersioning` as `VERSIONED`, but the name
+ * is the contract, not its casing.
+ */
+export function sharingFromVersioning(value: string | undefined): Sharing | undefined {
+  const name = value?.toUpperCase();
+  if (name === "SHARED") return "Shared";
+  if (name === "UNVERSIONED") return "Unversioned";
+  if (name === "VERSIONED") return "Versioned";
   return undefined;
 }
 
@@ -241,12 +336,14 @@ export function typeOfField(f: ProbeField): string | undefined {
 }
 
 /** A field's sharing, from the field node or its definition. */
-export function sharingOfField(f: ProbeField): "Shared" | "Unversioned" | "Versioned" | undefined {
+export function sharingOfField(f: ProbeField): Sharing | undefined {
   const shared = f.shared ?? f.templateField?.shared;
   const unversioned = f.unversioned ?? f.templateField?.unversioned;
-  if (typeof shared !== "boolean" && typeof unversioned !== "boolean") return undefined;
-  if (shared) return "Shared";
-  return unversioned ? "Unversioned" : "Versioned";
+  if (typeof shared === "boolean" || typeof unversioned === "boolean") {
+    if (shared) return "Shared";
+    return unversioned ? "Unversioned" : "Versioned";
+  }
+  return sharingFromVersioning(f.versioning ?? f.templateField?.versioning ?? undefined);
 }
 
 export interface Capability {
@@ -429,6 +526,21 @@ export function itemSelection(supported: Set<CapabilityId>, d: Discovered): stri
   }
   return parts.join("\n      ");
 }
+
+/**
+ * Top-level item selections that may be dropped and asked for again, keyed by the name they
+ * appear under in a GraphQL error path.
+ *
+ * All three are `hardStop: false` capabilities: losing one degrades the package in a way
+ * that can be described to the user, rather than making it silently wrong. The hard-stop
+ * capabilities are deliberately absent — there is no version of "retry without `versions`"
+ * that produces a package worth having.
+ */
+export const DROPPABLE_SELECTIONS: Record<string, CapabilityId> = {
+  isFallback: "fallback",
+  parent: "parent",
+  languages: "languages",
+};
 
 export interface CapabilityReport {
   supported: Set<CapabilityId>;

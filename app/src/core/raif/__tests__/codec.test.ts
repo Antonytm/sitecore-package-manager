@@ -19,7 +19,12 @@ import {
   encodeChunk,
   encodePayload,
   readFrames,
+  readPayload,
   writeFrames,
+  writePayload,
+  blobFrame,
+  chunkFlags,
+  isMediaChunk,
   opensChunkSet,
   MAGIC,
   HEADER_LENGTH,
@@ -42,6 +47,40 @@ describe("the .raif container", () => {
     const payload = new TextEncoder().encode("x");
     expect(opensChunkSet(await encodePayload(payload, true))).toBe(true);
     expect(opensChunkSet(await encodePayload(payload, false))).toBe(false);
+  });
+
+  it("round-trips a media chunk, which is deflate-only", async () => {
+    // ContentTransferController.GetChunkAsync calls CompressAsync instead of EncryptAsync
+    // when chunk.IsMedia. Running a media chunk through AES is what produced "ciphertext is
+    // not a non-zero multiple of 16 bytes" on a perfectly good 5 MB pull.
+    const payload = new TextEncoder().encode("media bytes, not ciphertext");
+    const chunk = await encodePayload(payload, { first: true, media: true });
+    expect(isMediaChunk(chunk)).toBe(true);
+    expect(bytesEqual(await decodePayload(chunk), payload)).toBe(true);
+  });
+
+  it("treats the flag byte as a bit field", async () => {
+    const payload = new TextEncoder().encode("x");
+    // 3 = opens a chunk set AND media. Testing the flag for equality with 1 reports such a
+    // chunk as a continuation, which is how the media case was first missed.
+    const both = await encodePayload(payload, { first: true, media: true });
+    expect(chunkFlags(both)).toBe(3);
+    expect(opensChunkSet(both)).toBe(true);
+    expect(isMediaChunk(both)).toBe(true);
+
+    const continuation = await encodePayload(payload, { first: false, media: true });
+    expect(chunkFlags(continuation)).toBe(2);
+    expect(opensChunkSet(continuation)).toBe(false);
+  });
+
+  it("does not encrypt a media chunk", async () => {
+    const payload = new TextEncoder().encode("x");
+    const item = await encodePayload(payload);
+    const media = await encodePayload(payload, { media: true });
+    // The encrypted form is padded to a block boundary; the deflate-only form is not.
+    expect((item.length - 5) % 16).toBe(0);
+    expect(media.length).not.toBe(item.length);
+    expect(isMediaChunk(item)).toBe(false);
   });
 
   it("rejects a chunk without the SCT header", async () => {
@@ -76,6 +115,61 @@ describe("frame framing", () => {
     const padded = new Uint8Array(good.length + 2);
     padded.set(good, 0);
     expect(() => readFrames(padded)).toThrow(/trailing bytes/);
+  });
+});
+
+describe("payloads that carry blobs", () => {
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3, 4, 5, 6, 7]);
+
+  it("round-trips frames and blobs through a payload", () => {
+    const frames = [readMessage(new Writer().varint(1, 7).finish())];
+    const blobs = [{ blobId: "9fda852be32f4775be013e5115a15512", data: png }];
+
+    const read = readPayload(writePayload(frames, blobs));
+    expect(read.frames).toHaveLength(2); // the item frame plus the blob's marker
+    expect(read.blobs).toHaveLength(1);
+    expect(read.blobs[0].blobId).toBe("9fda852be32f4775be013e5115a15512");
+    expect([...read.blobs[0].data]).toEqual([...png]);
+  });
+
+  it("keeps several blobs apart, including bytes that look like a frame length", () => {
+    // A blob is raw and unprefixed, so its own bytes are read as a frame header the moment
+    // the skip length is wrong. These start with a plausible little-endian length.
+    const first = Uint8Array.from([0x20, 0, 0, 0, 1, 2, 3, 4]);
+    const second = Uint8Array.from([0xff, 0xff, 0xff, 0x7f, 9]);
+    const read = readPayload(
+      writePayload([], [
+        { blobId: "a".repeat(32), data: first },
+        { blobId: "b".repeat(32), data: second },
+      ]),
+    );
+    expect(read.blobs.map((b) => b.blobId)).toEqual(["a".repeat(32), "b".repeat(32)]);
+    expect([...read.blobs[0].data]).toEqual([...first]);
+    expect([...read.blobs[1].data]).toEqual([...second]);
+  });
+
+  it("writes the length at the frame's top level, not inside the 101 wrapper", () => {
+    // protobuf-net puts the BASE type's members at the top level and only BlobId inside the
+    // ProtoInclude field. Reading Length from inside the wrapper yields 0, which skips
+    // nothing and desynchronises on the next marker.
+    const frame = blobFrame({ blobId: "c".repeat(32), data: png });
+    expect(frame.find((f) => f.no === 1)?.value).toBe(BigInt(png.length));
+    const wrapper = frame.find((f) => f.no === 101)?.value as Uint8Array;
+    expect(readMessage(wrapper).map((f) => f.no)).toEqual([3]);
+  });
+
+  it("survives a real encode/decode cycle with the blob intact", async () => {
+    const payload = writePayload(
+      [readMessage(new Writer().text(2, "an item").finish())],
+      [{ blobId: "d".repeat(32), data: png }],
+    );
+    const read = readPayload(await decodePayload(await encodePayload(payload)));
+    expect([...read.blobs[0].data]).toEqual([...png]);
+  });
+
+  it("emits nothing extra when there are no blobs", () => {
+    const frames = [readMessage(new Writer().varint(1, 1).finish())];
+    expect([...writePayload(frames)]).toEqual([...writeFrames(frames)]);
   });
 });
 

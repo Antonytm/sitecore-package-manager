@@ -17,6 +17,7 @@ import Link from "next/link";
 import { mdiArrowLeft, mdiPackageVariantClosed } from "@mdi/js";
 import { Button } from "@/src/components/ui/button";
 import { Icon } from "@/src/components/ui/icon";
+import { EnvironmentBar } from "@/src/features/shared/EnvironmentBar";
 import { Stepper } from "@/src/components/ui/stepper";
 import { useSession, useSessionBootstrap } from "@/src/features/create/store/session";
 import { installPackage } from "@/src/xmc/install";
@@ -80,6 +81,7 @@ export function InstallWizard() {
           actions().setResult({
             installed: 0,
             skipped: 0,
+            media: 0,
             failed: (pkg?.items ?? []).map((item) => ({
               item,
               error: String(e instanceof Error ? e.message : e),
@@ -101,16 +103,22 @@ export function InstallWizard() {
   return (
     <main className="mx-auto max-w-5xl p-8">
       <header className="mb-6">
-        <Link
-          href="/standalone-extension"
-          className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline"
-        >
-          <Icon path={mdiArrowLeft} size="sm" /> Package Manager
-        </Link>
-        <h1 className="flex items-center gap-2 text-2xl font-semibold">
-          <Icon path={mdiPackageVariantClosed} /> Install a package
-        </h1>
-        {step.subtitle && <p className="mt-1 text-muted-foreground">{step.subtitle}</p>}
+        {/* One row, not three. The portal's own chrome already names the app above the
+            iframe, so the back link, the title and the environment share a line — and the
+            environment belongs here most of all, because this is the screen that writes. */}
+        <div className="flex items-center gap-3">
+          <Link
+            href="/standalone-extension"
+            className="inline-flex shrink-0 items-center gap-1 text-sm text-muted-foreground hover:underline"
+          >
+            <Icon path={mdiArrowLeft} size="sm" /> Package Manager
+          </Link>
+          <h1 className="flex min-w-0 items-center gap-2 text-lg font-semibold">
+            <Icon path={mdiPackageVariantClosed} size="sm" /> Install a package
+          </h1>
+          <EnvironmentBar className="ml-auto" />
+        </div>
+        {step.subtitle && <p className="mt-1 text-sm text-muted-foreground">{step.subtitle}</p>}
       </header>
 
       <Stepper

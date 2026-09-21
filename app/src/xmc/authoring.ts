@@ -19,7 +19,11 @@ import type { XmcContext } from "./client";
 /** A GraphQL error returned by the Authoring API. */
 export interface GraphqlError {
   message?: string;
-  path?: string[];
+  /**
+   * The response path to the field that failed. Mixed on purpose: GraphQL indexes list
+   * entries numerically, so a real path looks like `["a3", "versions", "nodes", 0, "value"]`.
+   */
+  path?: (string | number)[];
 }
 
 /** Thrown when the Authoring API answers with `errors`, or with nothing we can read. */

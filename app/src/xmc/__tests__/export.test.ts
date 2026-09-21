@@ -352,6 +352,210 @@ describe("exportSource — batching and failure isolation", () => {
     expect(out.problems.join(" ")).toContain("not accessible");
   });
 
+  it("recovers an item the endpoint threw on, by dropping the selection it threw on", async () => {
+    // Measured against a live tenant: asking a media item for `isFallback` makes the
+    // Authoring API throw, and because the error propagates to the nearest nullable parent
+    // the WHOLE item comes back null — every field of it lost over one boolean.
+    const documents: string[] = [];
+    // The capability only reaches the selection when the probe proves the endpoint answers
+    // it, so the sample has to carry isFallback for this scenario to exist at all.
+    const sample = answer({ isFallback: false });
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: sample } as T, errors: [] };
+      documents.push(document);
+      if (document.includes("isFallback")) {
+        return {
+          data: { a0: sample, a1: null } as T,
+          errors: [
+            {
+              message: "Object reference not set to an instance of an object.",
+              path: ["a1", "isFallback"],
+            },
+          ],
+        };
+      }
+      // The retry, without isFallback: the item reads perfectly well.
+      return { data: { a0: answer({ path: "/media/test" }) } as T, errors: [] };
+    };
+
+    const out = await run([ref("a", "/x/a"), ref("b", "/media/test")], { request });
+
+    expect(out.items.length).toBe(2);
+    // No caveat: this run packaged one language, and the fallback flag is only ever read
+    // for the EXTRA ones. Nothing was lost, so nothing is claimed to have been.
+    expect(out.problems.filter((p) => p.includes("read without"))).toEqual([]);
+    // Only the failed item is asked for again, not the whole batch.
+    const retried = documents.filter(
+      (d) => d.includes("ExportItems") && !d.includes("isFallback"),
+    );
+    expect(retried.length).toBe(1);
+    expect(retried[0].match(/a\d+: item/g)?.length).toBe(1);
+  });
+
+  it("says nothing about a lost flag that this run was never going to read", async () => {
+    // `isFallback` is consulted only in the extra-language pass. A single-language export
+    // that loses it has lost nothing, and a caveat there is the kind of noise that trains
+    // people to skim past the real ones.
+    const sample = answer({ isFallback: false });
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: sample } as T, errors: [] };
+      if (document.includes("isFallback")) {
+        return {
+          data: { a0: null } as T,
+          errors: [{ message: "boom", path: ["a0", "isFallback"] }],
+        };
+      }
+      return { data: { a0: sample } as T, errors: [] };
+    };
+
+    const out = await run([ref("a", "/sitecore/templates/Project")], { request });
+    expect(out.items).toHaveLength(1);
+    expect(out.problems.filter((p) => p.includes("read without"))).toEqual([]);
+  });
+
+  it("groups one structural failure into one caveat, however many items it hit", async () => {
+    // `Item.isFallback` resolves through `FindSiteForItem()`, which returns null for any
+    // path no site covers — so every item under /sitecore/templates throws, always. A
+    // template folder used to produce one identically-worded sentence per item.
+    const sample = answer({ isFallback: false, languages: [{ name: "en" }, { name: "en-CA" }] });
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: sample } as T, errors: [] };
+      const aliases = [...document.matchAll(/^\s*(a\d+):/gm)].map((m) => m[1]);
+      if (document.includes("isFallback")) {
+        return {
+          data: {} as T,
+          errors: aliases.map((a) => ({ message: "boom", path: [a, "isFallback"] })),
+        };
+      }
+      return { data: Object.fromEntries(aliases.map((a) => [a, sample])) as T, errors: [] };
+    };
+
+    const refs = Array.from({ length: 18 }, (_, i) =>
+      ref(String(i), "/sitecore/templates/Project/t" + i),
+    );
+    const out = await run(refs, { request });
+
+    const caveats = out.problems.filter((p) => p.includes("read without"));
+    expect(caveats).toHaveLength(1);
+    expect(caveats[0]).toContain("18 items");
+    // A few paths named, the rest counted — enough to recognise the region, short enough
+    // to read.
+    expect(caveats[0]).toContain("/sitecore/templates/Project/t0");
+    expect(caveats[0]).toContain("and 15 more");
+    expect(caveats[0]).toContain("en-CA");
+  });
+
+  it("reports one caveat per degraded item, not one per language", async () => {
+    // The endpoint throws in every language it is asked for, so the per-language form said
+    // the same sentence three times and read like three distinct faults.
+    const sample = answer({ isFallback: false, languages: [{ name: "en" }, { name: "en-CA" }] });
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: sample } as T, errors: [] };
+      if (document.includes("isFallback")) {
+        return {
+          data: { a0: null } as T,
+          errors: [{ message: "boom", path: ["a0", "isFallback"] }],
+        };
+      }
+      return { data: { a0: sample } as T, errors: [] };
+    };
+
+    const out = await run([ref("a", "/media/test")], { request });
+    const caveats = out.problems.filter((p) => p.includes("read without"));
+    expect(caveats.length).toBe(1);
+    // What varies between languages is only the language list, so that is what is listed.
+    expect(caveats[0]).toContain("en");
+    expect(caveats[0]).toContain("en-CA");
+  });
+
+  it("does not retry when the error names a selection that cannot be given up", async () => {
+    // Dropping `versions` would produce a package worth nothing, so a throw there is
+    // reported as a failure rather than worked around.
+    const documents: string[] = [];
+    const sample = answer({ isFallback: false });
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: sample } as T, errors: [] };
+      if (document.includes("ExportItems")) documents.push(document);
+      return {
+        data: { a0: null } as T,
+        errors: [{ message: "boom", path: ["a0", "versions"] }],
+      };
+    };
+    const out = await run([ref("a", "/x/a")], { request });
+    expect(out.items.length).toBe(0);
+    expect(out.problems.join(" ")).toContain("boom");
+    expect(documents.length).toBe(1);
+  });
+
+  it("reports the original failure when the retry cannot save the item either", async () => {
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) {
+        return { data: { item: answer({ isFallback: false }) } as T, errors: [] };
+      }
+      if (document.includes("isFallback")) {
+        return {
+          data: { a0: null } as T,
+          errors: [{ message: "first failure", path: ["a0", "isFallback"] }],
+        };
+      }
+      return { data: { a0: null } as T, errors: [{ message: "still broken", path: ["a0"] }] };
+    };
+    const out = await run([ref("a", "/x/a")], { request });
+    expect(out.problems.join(" ")).toContain("still broken");
+    expect(out.problems.join(" ")).toContain("could not be read");
+  });
+
+  it("names the item and the field a server error came from", async () => {
+    // A bare "Object reference not set to an instance of an object." names neither, and is
+    // what a media item actually produced against a live tenant. The alias and the rest of
+    // the GraphQL path are the only record of where the server threw.
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: answer() } as T, errors: [] };
+      return {
+        data: { a0: answer(), a1: null } as T,
+        errors: [
+          {
+            message: "Object reference not set to an instance of an object.",
+            path: ["a1", "versions", "nodes", 0, "fields", "nodes", 2, "value"],
+          },
+        ],
+      };
+    };
+    const out = await run(
+      [ref("a", "/sitecore/content/Home"), ref("b", "/sitecore/media library/Project/test")],
+      { request },
+    );
+    const reported = out.problems.join(" | ");
+    expect(reported).toContain("/sitecore/media library/Project/test");
+    expect(reported).toContain("Object reference not set");
+    expect(reported).toContain("versions.nodes.0.fields.nodes.2.value");
+    // The alias is batching bookkeeping, not something a user can act on, so it is
+    // stripped rather than passed through into the message.
+    expect(reported).not.toContain("(at a1");
+  });
+
+  it("says which language a failure came from", async () => {
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: answer() } as T, errors: [] };
+      return {
+        data: { a0: answer() } as T,
+        errors: [{ message: "boom", path: ["a0"] }],
+      };
+    };
+    const out = await run([ref("a", "/x/a")], { request });
+    expect(out.problems.join(" ")).toContain("[en]");
+  });
+
+  it("still reports an error the server did not attribute to an alias", async () => {
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: answer() } as T, errors: [] };
+      return { data: { a0: null } as T, errors: [{ message: "something broke" }] };
+    };
+    const out = await run([ref("a", "/x/a")], { request });
+    // Unattributable is not the same as unreportable — dropping it would hide the cause.
+    expect(out.problems.join(" ")).toContain("something broke");
+  });
+
   it("reports progress against the total", async () => {
     const { request } = serving(answer());
     const seen: number[] = [];
@@ -360,6 +564,102 @@ describe("exportSource — batching and failure isolation", () => {
       { request, batchSize: 2, onProgress: (done, total) => seen.push(done / total) },
     );
     expect(seen[seen.length - 1]).toBe(1);
+  });
+
+  it("says so when the endpoint returned fewer fields than it says the item has", async () => {
+    // A connection answers ONE PAGE — 50 by default on this endpoint. An item whose field
+    // closure is bigger comes back as a silent prefix, and the package installs cleanly
+    // with content missing. This is the one failure mode a package cannot be checked for
+    // after the fact, so it has to be reported while it happens.
+    const truncated = answer({
+      versions: { nodes: [{ version: 1, fields: { nodes: [field()], totalCount: 97 } }] },
+    });
+    const { request } = serving(truncated);
+    const out = await run([ref("a", "/sitecore/content/Home")], { request });
+    expect(out.problems.join(" ")).toMatch(/returned 1 of 97 fields/);
+    // Reported, not refused: a partial item still beats no package at all.
+    expect(out.items).toHaveLength(1);
+  });
+
+  it("says nothing when the page held everything", async () => {
+    const whole = answer({
+      versions: { nodes: [{ version: 1, fields: { nodes: [field()], totalCount: 1 } }] },
+    });
+    const out = await run([ref("a", "/sitecore/content/Home")], { request: serving(whole).request });
+    expect(out.problems.join(" ")).not.toMatch(/fields/);
+  });
+
+  it("halves a batch the transport dropped, and keeps every item", async () => {
+    // Measured as net::ERR_QUIC_PROTOCOL_ERROR surfacing through the SDK as "Failed to
+    // fetch": the request never completes, so there is no `errors` array to read and no
+    // path naming an item. Asking for fewer items per request is the only lever.
+    const sample = answer();
+    let refused = 0;
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: sample } as T, errors: [] };
+      const aliases = [...document.matchAll(/^\s*(a\d+):/gm)].map((m) => m[1]);
+      if (aliases.length > 2) {
+        refused++;
+        throw new Error("Failed to fetch");
+      }
+      return {
+        data: Object.fromEntries(
+          aliases.map((a, i) => [a, answer({ path: "/x/" + a + i })]),
+        ) as T,
+        errors: [],
+      };
+    };
+
+    const refs = Array.from({ length: 8 }, (_, i) => ref(String(i), "/x/" + i));
+    const out = await run(refs, { request, batchSize: 8 });
+
+    expect(refused).toBeGreaterThan(0);
+    expect(out.items).toHaveLength(8);
+    expect(out.problems).toEqual([]);
+  });
+
+  it("re-keys the aliases of each half against the original batch", async () => {
+    // Each half answers with `a0…` against its OWN array, so the right half's `a0` is the
+    // parent's `a4`. Merging without re-keying reads every item after the split as the
+    // wrong item — and the package would install content under the wrong paths.
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) {
+        return { data: { item: answer() } as T, errors: [] };
+      }
+      const aliases = [...document.matchAll(/^\s*(a\d+): item\(where: \{ itemId: "([^"]+)"/gm)];
+      if (aliases.length > 1) throw new Error("Failed to fetch");
+      // One item per request now: answer with a path derived from the id it was asked for,
+      // so a mis-keyed merge cannot go unnoticed.
+      const [, alias, itemId] = aliases[0];
+      // `aliasedDocument` strips the braces, so the ref's first character is its index.
+      return {
+        data: { [alias]: answer({ path: "/x/" + itemId[0], itemId }) } as T,
+        errors: [],
+      };
+    };
+
+    const refs = Array.from({ length: 4 }, (_, i) => ref(String(i), "/x/" + i));
+    const out = await run(refs, { request, batchSize: 4 });
+    expect(out.items.map((i) => i.path)).toEqual(["/x/0", "/x/1", "/x/2", "/x/3"]);
+  });
+
+  it("reports the one item it still cannot fetch rather than losing the package", async () => {
+    const sample = answer();
+    const request = async <T,>(document: string): Promise<PartialResult<T>> => {
+      if (document.includes("ExportProbe")) return { data: { item: sample } as T, errors: [] };
+      const aliases = [...document.matchAll(/^\s*(a\d+): item\(where: \{ itemId: "([^"]+)"/gm)];
+      if (aliases.some(([, , id]) => id.startsWith("b"))) throw new Error("Failed to fetch");
+      return {
+        data: Object.fromEntries(
+          aliases.map(([, a, itemId]) => [a, answer({ itemId, path: "/x/a" })]),
+        ) as T,
+        errors: [],
+      };
+    };
+
+    const out = await run([ref("a", "/x/a"), ref("b", "/x/b")], { request, batchSize: 2 });
+    expect(out.items).toHaveLength(1);
+    expect(out.problems.join(" ")).toMatch(/\/x\/b \[en\]: the request failed — Failed to fetch/);
   });
 
   it("stops between batches when aborted", async () => {

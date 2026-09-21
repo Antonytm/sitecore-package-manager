@@ -36,7 +36,6 @@ export function PackageDesigner() {
 
   const hydrated = useDesigner((s) => s.hydrated);
   const projectName = useDesigner((s) => s.projectName);
-  const dirty = useDesigner((s) => s.dirty);
   const selection = useDesigner((s) => s.selection);
   const metadataName = useDesigner((s) => s.definition.metadata.name);
   const load = useDesigner((s) => s.load);
@@ -104,14 +103,6 @@ export function PackageDesigner() {
 
   return (
     <div className="flex h-dvh flex-col">
-      <header className="flex shrink-0 items-center justify-between gap-4 border-b px-4 py-2">
-        <h1 className="text-lg font-semibold">Package Designer</h1>
-        <p className="truncate text-sm text-muted-foreground">
-          {projectName ?? "Untitled project"}
-          {dirty && " — unsaved changes"}
-        </p>
-      </header>
-
       <Ribbon
         onOpen={() => openDialog({ kind: "project", mode: "open" })}
         onSave={() =>

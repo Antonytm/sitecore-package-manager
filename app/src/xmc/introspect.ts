@@ -23,8 +23,13 @@ interface TypeRef {
   ofType?: TypeRef | null;
 }
 
+interface IntrospectedArg {
+  name?: string;
+}
+
 interface IntrospectedField {
   name?: string;
+  args?: IntrospectedArg[] | null;
   type?: TypeRef | null;
 }
 
@@ -51,13 +56,19 @@ function named(ref: TypeRef | null | undefined): string | undefined {
 const TYPE_REF =
   "type { name kind ofType { name kind ofType { name kind ofType { name kind } } } }";
 
+// `args` is asked for because a paginated field is only safe to page when the schema says
+// it takes `first`. Sending `fields(first: …)` at a schema that has no such argument turns
+// a working query into a validation error, and `fieldId` is a hard stop.
 const typeDocument = (name: string) =>
-  'query Shape { __type(name: "' + name + '") { name fields { name ' + TYPE_REF + " } } }";
+  'query Shape { __type(name: "' + name + '") { name fields { name args { name } ' +
+  TYPE_REF + " } } }";
 
 export interface TypeShape {
   name: string;
   /** Field name → the named type it returns. */
   fields: Map<string, string | undefined>;
+  /** Field name → the names of the arguments it accepts, when introspection read them. */
+  args?: Map<string, Set<string>>;
 }
 
 async function shapeOf(request: Request, typeName: string): Promise<TypeShape | undefined> {
@@ -65,8 +76,13 @@ async function shapeOf(request: Request, typeName: string): Promise<TypeShape | 
   const fields = result.data?.__type?.fields;
   if (!fields || fields.length === 0) return undefined;
   const map = new Map<string, string | undefined>();
-  for (const f of fields) if (f.name) map.set(f.name, named(f.type));
-  return { name: typeName, fields: map };
+  const args = new Map<string, Set<string>>();
+  for (const f of fields) {
+    if (!f.name) continue;
+    map.set(f.name, named(f.type));
+    args.set(f.name, new Set((f.args ?? []).map((a) => a.name).filter((n): n is string => !!n)));
+  }
+  return { name: typeName, fields: map, args };
 }
 
 export interface SchemaShape {
@@ -84,6 +100,14 @@ export interface SchemaShape {
   templateField?: TypeShape;
   /** True when the field list is reached through a `nodes` connection. */
   fieldsAreConnection: boolean;
+  /**
+   * The connection type behind `item { fields }`, when there is one.
+   *
+   * Kept because a connection is PAGED — this endpoint defaults to 50 (`GraphQL.DefaultPageSize`)
+   * — so what that type offers decides whether the whole field set can be asked for and
+   * whether the answer can be checked for truncation.
+   */
+  fieldsConnection?: TypeShape;
   /** True when the versions list is reached through a `nodes` connection. */
   versionsAreConnection: boolean;
 }
@@ -149,7 +173,14 @@ export async function introspectSchema(request: Request): Promise<SchemaShape | 
     ? await shapeOf(request, templateFieldType)
     : undefined;
 
-  return { item, field, templateField, fieldsAreConnection: true, versionsAreConnection };
+  return {
+    item,
+    field,
+    templateField,
+    fieldsAreConnection: true,
+    fieldsConnection: fieldsShape,
+    versionsAreConnection,
+  };
 }
 
 /** The first candidate this schema actually has, or undefined. */

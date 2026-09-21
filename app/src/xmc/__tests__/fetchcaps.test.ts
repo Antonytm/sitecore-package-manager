@@ -9,11 +9,17 @@ import { describe, it, expect } from "vitest";
 import {
   CAPABILITIES,
   describeBlocked,
+  discover,
+  itemSelection,
   looksPreEscaped,
   probeDocument,
   reportFrom,
+  sharingFromVersioning,
+  sharingOfField,
+  totalOf,
 } from "../fetchcaps";
 import type { CapabilityId, ProbeItem } from "../fetchcaps";
+import type { SchemaShape } from "../introspect";
 
 const answers = (m: Partial<Record<CapabilityId, ProbeItem | undefined>>) =>
   new Map(Object.entries(m) as [CapabilityId, ProbeItem | undefined][]);
@@ -140,5 +146,127 @@ describe("looksPreEscaped", () => {
   it("passes a raw stored value through", () => {
     expect(looksPreEscaped('<image mediaid="{F8B6426B}" />')).toBe(false);
     expect(looksPreEscaped("plain text")).toBe(false);
+  });
+});
+
+// ── the live Authoring schema's actual shapes ────────────────────────────────
+//
+// Two defects found by installing a media item and getting an item with no version at all.
+// Both were silent: the package built, the install reported success, and the result was
+// wrong. The fixtures below are the real schema — `ItemTemplateField.versioning` as a
+// single enum, and a paginated `fields` connection.
+
+/** The live schema, as introspection reports it. */
+const LIVE: SchemaShape = {
+  item: {
+    name: "Item",
+    fields: new Map([
+      ["itemId", "ID"],
+      ["name", "String"],
+      ["fields", "ItemFieldConnection"],
+      ["versions", "Item"],
+      ["isFallback", "Boolean"],
+      ["parent", "Item"],
+    ]),
+    args: new Map([["fields", new Set(["first", "after", "ownFields", "excludeStandardFields"])]]),
+  },
+  field: {
+    name: "ItemField",
+    fields: new Map([
+      ["name", "String"],
+      ["value", "String"],
+      ["fieldId", "ID"],
+      ["containsStandardValue", "Boolean"],
+      ["templateField", "ItemTemplateField"],
+    ]),
+    args: new Map(),
+  },
+  // No `shared`, no `unversioned` — just the one enum. This is the whole bug.
+  templateField: {
+    name: "ItemTemplateField",
+    fields: new Map([
+      ["name", "String"],
+      ["type", "String"],
+      ["versioning", "FieldVersioning"],
+      ["templateFieldId", "ID"],
+    ]),
+    args: new Map(),
+  },
+  fieldsConnection: {
+    name: "ItemFieldConnection",
+    fields: new Map([
+      ["nodes", "ItemField"],
+      ["totalCount", "Int"],
+      ["pageInfo", "PageInfo"],
+    ]),
+    args: new Map(),
+  },
+  fieldsAreConnection: true,
+  versionsAreConnection: false,
+};
+
+describe("field sharing on a schema that states it as one enum", () => {
+  it("selects templateField { versioning } when there is no boolean pair", () => {
+    const d = discover(LIVE);
+    expect(d.tfVersioning).toBe("versioning");
+    const selection = itemSelection(new Set<CapabilityId>(["fieldSharing"]), d);
+    expect(selection).toContain("versioning");
+  });
+
+  it("maps the enum to our three sharings, whatever its casing", () => {
+    expect(sharingFromVersioning("SHARED")).toBe("Shared");
+    expect(sharingFromVersioning("UNVERSIONED")).toBe("Unversioned");
+    expect(sharingFromVersioning("Versioned")).toBe("Versioned");
+    expect(sharingFromVersioning("nonsense")).toBeUndefined();
+    expect(sharingFromVersioning(undefined)).toBeUndefined();
+  });
+
+  it("reads an Unversioned media field, which the boolean pair could never see", () => {
+    // A media item on Unversioned/Image keeps blob, size and extension unversioned. Read as
+    // Versioned, they are written as version-1 values, the target files them as unversioned
+    // anyway, and the version is left with nothing in it — an item with no version.
+    expect(sharingOfField({ templateField: { versioning: "UNVERSIONED" } })).toBe("Unversioned");
+    expect(sharingOfField({ versioning: "SHARED" })).toBe("Shared");
+  });
+
+  it("still prefers explicit booleans where a schema has them", () => {
+    expect(sharingOfField({ shared: true, versioning: "UNVERSIONED" })).toBe("Shared");
+  });
+
+  it("counts the capability as supported once the enum answers", () => {
+    const capability = CAPABILITIES.find((c) => c.id === "fieldSharing")!;
+    expect(capability.selection(discover(LIVE))).toBeDefined();
+    expect(
+      capability.assert({ fields: { nodes: [{ templateField: { versioning: "VERSIONED" } }] } }),
+    ).toBe(true);
+  });
+});
+
+describe("the fields connection is paged", () => {
+  it("asks for the whole field set rather than the endpoint's default page", () => {
+    // The default is 50 (`GraphQL.DefaultPageSize`) and the Standard Template alone brings
+    // about ninety fields, so an unpaged selection packages a prefix of every item.
+    const selection = itemSelection(new Set<CapabilityId>(), discover(LIVE));
+    expect(selection).toMatch(/fields\(first: \d{3,}\)/);
+  });
+
+  it("asks for totalCount when the connection reports it, so truncation is visible", () => {
+    expect(itemSelection(new Set<CapabilityId>(), discover(LIVE))).toContain("totalCount");
+  });
+
+  it("does not send a paging argument the schema has no argument for", () => {
+    // Sending `first:` at a connection that does not take one turns a working query into a
+    // validation error, and `fieldId` is a hard stop — so an unpageable schema stays
+    // readable rather than becoming unusable.
+    const noArgs: SchemaShape = { ...LIVE, item: { ...LIVE.item, args: new Map() } };
+    const selection = itemSelection(new Set<CapabilityId>(), discover(noArgs));
+    expect(selection).not.toContain("first:");
+    expect(selection).toContain("nodes {");
+  });
+
+  it("reports how many entries a connection says it holds", () => {
+    expect(totalOf({ nodes: [{}], totalCount: 97 })).toBe(97);
+    expect(totalOf([{}])).toBeUndefined();
+    expect(totalOf({ nodes: [{}] })).toBeUndefined();
   });
 });

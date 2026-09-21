@@ -91,7 +91,9 @@ export function GeneratePackageDialog({ open, definition, onClose }: Props) {
       controller.signal.throwIfAborted();
 
       setBusy("Building the zip…");
-      const bytes = await writePackage(toPackageModel(definition, exported.items));
+      const bytes = await writePackage(
+        toPackageModel(definition, exported.items, exported.blobs),
+      );
 
       setBuilt({
         bytes,

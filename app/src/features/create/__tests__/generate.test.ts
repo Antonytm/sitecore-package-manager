@@ -50,6 +50,8 @@ const exported = (over: Partial<ExportedPackage> = {}): ExportedPackage => ({
   items: [],
   problems: [],
   danglingMedia: [],
+  media: [],
+  blobs: [],
   duplicates: 0,
   ...over,
 });

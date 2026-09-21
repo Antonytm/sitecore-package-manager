@@ -24,6 +24,8 @@ import type { LanguageInfo } from "@/src/xmc/browse";
 import type { PreviewEntry } from "@/src/xmc/resolve";
 import type { FilterKey } from "@/src/core/filters";
 import { contextIdOf, createXmcContext } from "@/src/xmc/client";
+import { describeEnvironment, narrowHostState } from "@/src/xmc/environment";
+import type { EnvironmentInfo } from "@/src/xmc/environment";
 import type { XmcContext } from "@/src/xmc/client";
 import { useMarketplaceClient } from "@/src/utils/hooks/useMarketplaceClient";
 import type { ProjectDialogMode } from "../dialogs/ProjectDialog";
@@ -70,6 +72,14 @@ export interface TreeUi {
 export interface SessionState {
   client?: ClientSDK;
   appContext?: ApplicationContext;
+  /**
+   * Which SitecoreAI project/environment this session is pointed at, resolved once.
+   *
+   * Derived rather than raw: `host.state` carries a `userInfo` block (email, name, auth
+   * subject) that this app has no use for, and `narrowHostState` drops it before anything
+   * is stored. Nothing downstream can render or copy what was never kept.
+   */
+  environment?: EnvironmentInfo;
   contextId?: string;
   ctx?: XmcContext;
   languages: LanguageInfo[];
@@ -126,6 +136,18 @@ export const useSession = create<SessionStore>()((set, get) => ({
       return;
     }
 
+    // `HostState<'portal'>` is typed `null`, but a standalone extension really is answered
+    // with a populated `xmCloudTenantInfo` — that is where the project and environment
+    // NAMES come from, and the type is what would have stopped us asking. Non-fatal: the
+    // resolver falls back to `tenantDisplayName` when this yields nothing.
+    let host;
+    try {
+      const state = await client.query("host.state");
+      host = narrowHostState(state?.data);
+    } catch {
+      host = undefined;
+    }
+
     const contextId = contextIdOf(appContext);
     if (!contextId) {
       // Not fatal on its own, but every picker will fail without it, so leave a breadcrumb
@@ -134,7 +156,13 @@ export const useSession = create<SessionStore>()((set, get) => ({
     }
 
     const ctx = createXmcContext(client, { contextId });
-    set({ appContext, contextId, ctx, contextLoaded: true });
+    set({
+      appContext,
+      environment: describeEnvironment(appContext, host),
+      contextId,
+      ctx,
+      contextLoaded: true,
+    });
 
     // Languages drive the language filter's checkbox list; failure is non-fatal.
     try {

@@ -112,6 +112,39 @@ describe("response unwrapping", () => {
     await expect(getStatus(ctx, "t-1", { call })).rejects.toThrow(/NotFound.*404/);
   });
 
+  it("names the operation that failed, not a generic label", async () => {
+    // Every transfer error used to be labelled "content transfer", which is no label at
+    // all when a pull fails somewhere inside a five-call sequence.
+    const { ctx, call } = ctxWith({
+      getContentTransferStatus: { error: { title: "NotFound", status: 404 } },
+    });
+    await expect(getStatus(ctx, "t-1", { call })).rejects.toMatchObject({
+      operation: "getContentTransferStatus",
+    });
+  });
+
+  it("describes an error body that is not the RFC-7807 shape", async () => {
+    // Falling back to a bare "request failed" throws away the only evidence there is —
+    // which is exactly what a live tenant returned while diagnosing a media pull.
+    const { ctx, call } = ctxWith({
+      getContentTransferStatus: { error: { reason: "TransferLimitReached", code: 17 } },
+    });
+    await expect(getStatus(ctx, "t-1", { call })).rejects.toThrow(
+      /TransferLimitReached.*17|17.*TransferLimitReached/,
+    );
+  });
+
+  it("fails createTransfer at the call that was refused", async () => {
+    // The response used to be awaited and discarded, so a refused create looked like a
+    // success and the run blew up later in the status poll, blaming the wrong operation.
+    const { ctx, call } = ctxWith({
+      createContentTransfer: { error: { title: "DataTrees are empty or missing", status: 400 } },
+    });
+    await expect(
+      createTransfer(ctx, "t-1", [{ itemPath: "/x", scope: "SingleItem", mergeStrategy: "OverrideExistingItem" }], { call }),
+    ).rejects.toMatchObject({ operation: "createContentTransfer" });
+  });
+
   it("reports an unknown state rather than throwing on an empty body", async () => {
     const { ctx, call } = ctxWith({ getContentTransferStatus: wrapped(undefined) });
     expect((await getStatus(ctx, "t-1", { call })).state).toBe("Unknown");
